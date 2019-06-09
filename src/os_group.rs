@@ -18,7 +18,7 @@ pub struct Error {
 }
 
 impl OsGroup {
-    pub fn from_gid(gid: &Gid) -> Result<Option<OsGroup>, Error> {
+    pub fn from_gid(gid: Gid) -> Result<Option<OsGroup>, Error> {
         // _SC_GETPW_R_SIZE_MAX is not a maximum:
         // http://tomlee.co/2012/10/problems-with-large-linux-unix-groups-and-getgrgid_r-getgrnam_r/
         let buffer_size = OsGroup::get_buffer_size();

@@ -19,67 +19,84 @@ pub struct Config {
     pub app_account: String,
     pub mock_app_account_uid: Option<Uid>,
     pub mock_app_account_gid: Option<Gid>,
+    pub hooks_dir: PathBuf,
     pub dry_run: bool,
 }
 
-pub const DEFAULT_CONFIG_FILE_PATH: &str = "/etc/activatepid1user.yml";
+pub const DEFAULT_CONFIG_FILE_PATH: &str = "/etc/activatecontaineruid/config.yml";
 
 pub fn load_config() -> Config {
     let file_config = load_config_file_yaml();
 
     Config {
         log_level: load_config_key_or_abort(
-            "AP1U_LOG_LEVEL",
+            "ACU_LOG_LEVEL",
             &file_config,
             "log_level",
+            true,
             log::Level::Info,
             &parse_log_level,
             &|doc| doc.as_str().and_then(parse_log_level),
         ),
         target_uid: load_config_key_or_abort(
-            "AP1U_TARGET_UID",
+            "ACU_TARGET_UID",
             &file_config,
             "target_uid",
+            false,
             None,
             &parse_uid_str,
             &parse_uid_yaml,
         ),
         target_gid: load_config_key_or_abort(
-            "AP1U_TARGET_GID",
+            "ACU_TARGET_GID",
             &file_config,
             "target_gid",
+            false,
             None,
             &parse_gid_str,
             &parse_gid_yaml,
         ),
         app_account: load_config_key_or_abort(
-            "AP1U_APP_ACCOUNT",
+            "ACU_APP_ACCOUNT",
             &file_config,
             "app_account",
+            false,
             String::from("app"),
             &|env_val| Some(String::from(env_val)),
             &|doc| doc.clone().into_string(),
         ),
         mock_app_account_uid: load_config_key_or_abort(
-            "AP1U_MOCK_APP_ACCOUNT_UID",
+            "ACU_MOCK_APP_ACCOUNT_UID",
             &file_config,
             "mock_app_account_uid",
+            false,
             None,
             &parse_uid_str,
             &parse_uid_yaml,
         ),
         mock_app_account_gid: load_config_key_or_abort(
-            "AP1U_MOCK_APP_ACCOUNT_GID",
+            "ACU_MOCK_APP_ACCOUNT_GID",
             &file_config,
             "mock_app_account_gid",
+            false,
             None,
             &parse_gid_str,
             &parse_gid_yaml,
         ),
+        hooks_dir: load_config_key_or_abort(
+            "ACU_HOOKS_DIR",
+            &file_config,
+            "hooks_dir",
+            false,
+            PathBuf::from("/etc/activatecontaineruid/hooks.d"),
+            &parse_path_str,
+            &parse_path_yaml,
+        ),
         dry_run: load_config_key_or_abort(
-            "AP1U_DRY_RUN",
+            "ACU_DRY_RUN",
             &file_config,
             "dry_run",
+            true,
             false,
             &parse_bool_str,
             &parse_bool_yaml,
@@ -87,12 +104,16 @@ pub fn load_config() -> Config {
     }
 }
 
+fn got_root_via_setuid_bit() -> bool {
+    unistd::geteuid().is_root() && !unistd::getuid().is_root()
+}
+
 fn get_config_file_path() -> PathBuf {
-    match env::var_os("AP1U_CONFIG_FILE") {
+    match env::var_os("ACU_CONFIG_FILE") {
         Some(val) => {
-            if unistd::geteuid().is_root() && !unistd::getuid().is_root() {
+            if got_root_via_setuid_bit() {
                 warn!(
-                    "Ignoring AP1U_CONFIG_FILE env var because we got \
+                    "Ignoring ACU_CONFIG_FILE env var because we got \
                      root privileges via the setuid root bit. Will only \
                      load configuration from {}.",
                     DEFAULT_CONFIG_FILE_PATH
@@ -108,6 +129,7 @@ fn get_config_file_path() -> PathBuf {
 
 fn load_config_file_yaml() -> Yaml {
     let config_file_path = &get_config_file_path();
+    // TODO: check whether config file is only only writable by root
     let file_config_str = std::fs::read_to_string(config_file_path);
     let file_config_str = file_config_str.unwrap_or_else(|err| {
         if err.kind() == io::ErrorKind::NotFound {
@@ -168,20 +190,46 @@ impl<'a> Error for ConfigLoadError<'a> {}
 type EnvValParser<T> = Fn(&str) -> Option<T>;
 type ConfigFileValParser<T> = Fn(&Yaml) -> Option<T>;
 
-fn load_config_key<'a, T>(
+fn load_config_key<'a, T: Clone>(
     env_key: &'a str,
     config_file: &'a Yaml,
     config_key: &'a str,
+    setuid_root_safe: bool,
     default_value: T,
     env_val_parser: &EnvValParser<T>,
     config_file_val_parser: &ConfigFileValParser<T>,
 ) -> Result<T, ConfigLoadError<'a>> {
     let config_val = &config_file[config_key];
+    let default_value = &default_value;
+
+    let load_from_config_file = || match config_val {
+        Yaml::Real(..)
+        | Yaml::Integer(..)
+        | Yaml::String(..)
+        | Yaml::Boolean(..)
+        | Yaml::Array(..)
+        | Yaml::Hash(..)
+        | Yaml::Alias(..) => match config_file_val_parser(&config_val) {
+            Some(result) => Ok(result),
+            None => Err(ConfigLoadError::ConfigFileInvalidValue(
+                config_key,
+                &config_val,
+            )),
+        },
+        Yaml::Null | Yaml::BadValue => Ok(default_value.clone()),
+    };
 
     match env::var(env_key) {
         Ok(env_val) => {
-            if env_val.is_empty() {
-                Ok(default_value)
+            if !setuid_root_safe && got_root_via_setuid_bit() {
+                warn!(
+                    "Ignoring {} env var because we got root privileges via \
+                     the setuid root bit.",
+                    env_key
+                );
+                load_from_config_file()
+            } else if env_val.is_empty() {
+                Ok(default_value.clone())
             } else {
                 match env_val_parser(env_val.as_str()) {
                     Some(result) => Ok(result),
@@ -189,30 +237,27 @@ fn load_config_key<'a, T>(
                 }
             }
         }
-        Err(VarError::NotPresent) => match config_val {
-            Yaml::Real(..)
-            | Yaml::Integer(..)
-            | Yaml::String(..)
-            | Yaml::Boolean(..)
-            | Yaml::Array(..)
-            | Yaml::Hash(..)
-            | Yaml::Alias(..) => match config_file_val_parser(&config_val) {
-                Some(result) => Ok(result),
-                None => Err(ConfigLoadError::ConfigFileInvalidValue(
-                    config_key,
-                    &config_val,
-                )),
-            },
-            Yaml::Null | Yaml::BadValue => Ok(default_value),
-        },
-        Err(VarError::NotUnicode(_)) => Err(ConfigLoadError::EnvVarNotUnicode(env_key)),
+        Err(VarError::NotPresent) => load_from_config_file(),
+        Err(VarError::NotUnicode(_)) => {
+            if !setuid_root_safe && got_root_via_setuid_bit() {
+                warn!(
+                    "Ignoring {} env var because we got root privileges via \
+                     the setuid root bit.",
+                    env_key
+                );
+                load_from_config_file()
+            } else {
+                Err(ConfigLoadError::EnvVarNotUnicode(env_key))
+            }
+        }
     }
 }
 
-fn load_config_key_or_abort<'a, T>(
+fn load_config_key_or_abort<'a, T: Clone>(
     env_key: &'a str,
     config_file: &'a Yaml,
     config_key: &'a str,
+    setuid_root_safe: bool,
     default_value: T,
     env_val_parser: &EnvValParser<T>,
     config_file_val_parser: &ConfigFileValParser<T>,
@@ -221,6 +266,7 @@ fn load_config_key_or_abort<'a, T>(
         env_key,
         config_file,
         config_key,
+        setuid_root_safe,
         default_value,
         env_val_parser,
         config_file_val_parser,
@@ -273,4 +319,12 @@ pub fn parse_bool_str(val: &str) -> Option<bool> {
 
 fn parse_bool_yaml(doc: &Yaml) -> Option<bool> {
     doc.clone().into_bool()
+}
+
+fn parse_path_str(val: &str) -> Option<PathBuf> {
+    Some(PathBuf::from(val))
+}
+
+fn parse_path_yaml(doc: &Yaml) -> Option<PathBuf> {
+    doc.clone().into_string().map(|s| PathBuf::from(s))
 }
