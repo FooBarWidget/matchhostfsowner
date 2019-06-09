@@ -10,9 +10,9 @@ use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
 use os_group::OsGroup;
 use pwd::{self, Passwd, PwdError};
-use std::os::unix::fs::MetadataExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
 use std::result::Result;
+use std::ffi::{CString, OsString};
 use std::{env, fs, io, path::PathBuf, process};
 
 fn initialize_logger() {
@@ -151,6 +151,7 @@ struct AccountDetails {
     gid: Gid,
     name: String,
     home: String,
+    shell: String,
     group_name: String,
 }
 
@@ -197,6 +198,7 @@ fn lookup_app_account_details(
         gid: gid,
         name: entry.name,
         home: entry.dir,
+        shell: entry.shell,
         group_name: grp_entry.name,
     })
 }
@@ -610,6 +612,7 @@ fn lookup_target_account_details(
         gid: target_gid,
         name: entry.name,
         home: entry.dir,
+        shell: entry.shell,
         group_name: grp_entry.name,
     })
 }
@@ -782,6 +785,76 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
+fn change_supplementary_groups(target_account_details: &AccountDetails) {
+    use std::ffi;
+    let user_c = ffi::CString::new(target_account_details.name).unwrap_or_else(|err| {
+        abort!("Error changing process supplementary groups: error allocating a C string: {}", err);
+    });
+    unistd::initgroups(&user_c, target_account_details.gid).unwrap_or_else(|err| {
+        abort!("Error changing process supplementary groups: {}", err);
+    });
+}
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+fn change_supplementary_groups(_target_account_details: &AccountDetails) {
+    // Not supported by nix crate
+}
+
+fn change_user(target_account_details: &AccountDetails) {
+    if !unistd::geteuid().is_root() {
+        info!("No root privileges. Not changing process UID/GID.");
+        return;
+    }
+
+    change_supplementary_groups(target_account_details);
+    unistd::setgid(target_account_details.gid).unwrap_or_else(|err| {
+        abort!("Error changing process GID to {}: {}", target_account_details.gid, err);
+    });
+    unistd::setuid(target_account_details.uid).unwrap_or_else(|err| {
+        abort!("Error changing process UID to {}: {}", target_account_details.uid, err);
+    });;
+    env::set_var("USER", &target_account_details.name);
+    env::set_var("LOGNAME", &target_account_details.name);
+    env::set_var("SHELL", &target_account_details.shell);
+    env::set_var("HOME", &target_account_details.home);
+}
+
+fn maybe_execute_next_command(target_account_details: &AccountDetails) {
+    let args: Vec<OsString> = env::args_os().collect();
+
+    if args.len() > 1 {
+        fn format_args() -> String {
+            env::args().skip(1).collect::<Vec<String>>().join(" ")
+        }
+
+        debug!("Executing command specified by CLI arguments: {}", format_args());
+
+        let exec_args = args.iter().skip(1).map(|arg| {
+            CString::new(arg.clone().into_vec()).unwrap_or_else(|err| {
+                abort!("Error executing command '{}': error allocating C string: {}", format_args(), err);
+            })
+        });
+        let exec_args: Vec<CString> = exec_args.collect();
+
+        unistd::execvp(&exec_args[0], &exec_args).unwrap_or_else(|err| {
+            abort!("Error executing command '{}': {}", format_args(), err);
+        });
+
+    } else if unistd::getpid().as_raw() == 1 {
+        debug!("We are PID 1, and no CLI arguments provided, so executing shell: {}", target_account_details.shell);
+        let shell = CString::new(target_account_details.shell.clone()).unwrap_or_else(|err| {
+            abort!("Error executing command '{}': error allocating C string: {}", target_account_details.shell, err);
+        });
+        unistd::execvp(&shell.clone(), &vec![shell]).unwrap_or_else(|err| {
+            abort!("Error executing command '{}': {}", target_account_details.shell, err);
+        });
+
+    } else {
+        debug!("We are not PID 1, and no CLI arguments provided, so exiting without executing next command.");
+    }
+}
+
 fn main() {
     initialize_logger();
     check_running_allowed();
@@ -850,7 +923,7 @@ fn main() {
         lookup_target_account_details_or_abort(&config, target_uid, target_gid, using_app_account);
     chown_target_account_home_dir(&config, &target_account_details);
     run_hooks(&config, &target_account_details);
-    /* change_user(target_uid, target_account_details.gid);
+    change_user(&target_account_details);
 
-    maybe_execute_next_command(); */
+    maybe_execute_next_command(&target_account_details);
 }
