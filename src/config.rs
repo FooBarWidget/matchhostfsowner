@@ -1,8 +1,7 @@
 use super::abort;
-use log::error;
-use nix::unistd::{Gid, Uid};
-use std::env;
-use std::env::VarError;
+use log::{error, warn};
+use nix::unistd::{self, Gid, Uid};
+use std::env::{self, VarError};
 use std::error::Error;
 use std::fmt;
 use std::io;
@@ -90,7 +89,19 @@ pub fn load_config() -> Config {
 
 fn get_config_file_path() -> PathBuf {
     match env::var_os("AP1U_CONFIG_FILE") {
-        Some(val) => PathBuf::from(val),
+        Some(val) => {
+            if unistd::geteuid().is_root() && !unistd::getuid().is_root() {
+                warn!(
+                    "Ignoring AP1U_CONFIG_FILE env var because we got \
+                     root privileges via the setuid root bit. Will only \
+                     load configuration from {}.",
+                    DEFAULT_CONFIG_FILE_PATH
+                );
+                PathBuf::from(DEFAULT_CONFIG_FILE_PATH)
+            } else {
+                PathBuf::from(val)
+            }
+        }
         None => PathBuf::from(DEFAULT_CONFIG_FILE_PATH),
     }
 }

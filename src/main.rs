@@ -1,19 +1,17 @@
 mod abort;
 mod config;
 mod os_group;
+mod simple_logger;
 
 use config::{load_config, Config};
 use failure::Fail;
-use log::{debug, error, info, warn, trace, Level};
-use nix::unistd;
-use nix::unistd::{Gid, Uid};
+use log::{debug, error, info, trace, warn, Level};
+use nix::unistd::{self, Gid, Uid};
 use os_group::OsGroup;
-use pwd;
-use pwd::{Passwd, PwdError};
-use simple_logger;
+use pwd::{self, Passwd, PwdError};
 use std::os::unix::fs::MetadataExt;
 use std::result::Result;
-use std::{env, error, fs, path, io, process};
+use std::{env, error, fs, io, path, process};
 
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
@@ -31,12 +29,14 @@ fn check_running_allowed() {
         // - We are running as PID 1.
         // - The root privilege was not obtained via the setuid root bit.
         if unistd::getpid().as_raw() != 1 && !unistd::getuid().is_root() {
-            abort!("This program may only be run when one \
-                of the following conditions apply:\n\
-                \n \
-                - This program is run as PID 1.\n \
-                - This program is run with root privileges (but not \
-                   via the setuid root bit).");
+            abort!(
+                "This program may only be run when one \
+                 of the following conditions apply:\n\
+                 \n \
+                 - This program is run as PID 1.\n \
+                 - This program is run with root privileges (but not \
+                 via the setuid root bit)."
+            );
         }
     } else if !allow_non_root() {
         // We don't have the setuid root bit set.
@@ -48,30 +48,35 @@ fn check_running_allowed() {
             Ok(path) => {
                 self_exe_desc = path.to_string_lossy().into_owned();
                 self_exe_path_str = self_exe_desc.clone();
-            },
+            }
             Err(err) => {
                 warn!("Error stat()ing /proc/self/exe: {}", err);
                 self_exe_desc = String::from("this program's executable file");
                 self_exe_path_str = String::from("/path-to-this-program's-exe");
-            },
+            }
         };
 
-        abort!("This program requires root privileges to operate.\n\
-            \n \
+        abort!(
+            "This program requires root privileges to operate.\n\
+             \n \
              - First time running this program in this container?\n   \
-               Then this probably means that you didn't set the setuid root bit \
-               on {}. Please set it with:\n\
-               \n     \
-                 chown root: {}\n     \
-                 chmod +s {}\n\
-               \n \
+             Then this probably means that you didn't set the setuid root bit \
+             on {}. Please set it with:\n\
+             \n     \
+             chown root: {}\n     \
+             chmod +s {}\n\
+             \n \
              - Not the first time?\n   \
-               Then this error is normal. For security reasons, this program \
-               may only be invoked once, so this program drops its own setuid \
-               root bit after executing once.",
+             Then this error is normal. For security reasons, this program \
+             may only be invoked once, so this program drops its own setuid \
+             root bit after executing once.\n\
+             \n \
+             - Hint: set AP1U_ALLOW_NON_ROOT=1 to force running this \
+             program despite not having root privileges.",
             self_exe_desc,
             self_exe_path_str,
-            self_exe_path_str);
+            self_exe_path_str
+        );
     }
 }
 
@@ -123,27 +128,32 @@ enum AccountDetailsLookupError {
     PrimaryGroupNotFound(Gid),
 }
 
-fn lookup_target_account_details(config: &Config) -> Result<AccountDetails, AccountDetailsLookupError> {
+fn lookup_target_account_details(
+    config: &Config,
+) -> Result<AccountDetails, AccountDetailsLookupError> {
     let uid: Uid;
     let gid: Gid;
 
-
     if config.target_uid.is_some() && config.target_gid.is_some() {
         debug!("Using target UID/GID specified by configuration.");
-    } else if config.target_uid.is_some() {
-        debug!("Using target UID specified by configuration.");
+        uid = config.target_uid.unwrap();
+        gid = config.target_gid.unwrap();
     } else {
-        debug!("Using target GID specified by configuration.");
-    }
+        if config.target_uid.is_some() {
+            debug!("Using target UID specified by configuration.");
+        } else {
+            debug!("Using target GID specified by configuration.");
+        }
 
-    if unistd::getpid().as_raw() == 1 {
-        uid = config.target_uid.unwrap_or(unistd::getuid());
-        gid = config.target_gid.unwrap_or(unistd::getgid());
-    } else {
-        debug!("Looking up target UID/GID by querying /proc/1.");
-        let (x, y) = lookup_target_uid_gid_from_proc(config)?;
-        uid = x;
-        gid = y;
+        if unistd::getpid().as_raw() == 1 {
+            uid = config.target_uid.unwrap_or(unistd::getuid());
+            gid = config.target_gid.unwrap_or(unistd::getgid());
+        } else {
+            debug!("Looking up target UID/GID by querying /proc/1.");
+            let (x, y) = lookup_target_uid_gid_from_proc(config)?;
+            uid = config.target_uid.unwrap_or(x);
+            gid = config.target_gid.unwrap_or(y);
+        }
     }
 
     let grp_entry = match OsGroup::from_gid(&gid) {
@@ -159,8 +169,11 @@ fn lookup_target_account_details(config: &Config) -> Result<AccountDetails, Acco
     })
 }
 
-fn lookup_target_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), AccountDetailsLookupError> {
-    let meta = fs::metadata("/proc/1").map_err(|err| AccountDetailsLookupError::Proc1StatError(err))?;
+fn lookup_target_uid_gid_from_proc(
+    config: &Config,
+) -> Result<(Uid, Gid), AccountDetailsLookupError> {
+    let meta =
+        fs::metadata("/proc/1").map_err(|err| AccountDetailsLookupError::Proc1StatError(err))?;
     Ok((
         config.target_uid.unwrap_or(Uid::from_raw(meta.uid())),
         config.target_gid.unwrap_or(Gid::from_raw(meta.gid())),
@@ -206,7 +219,8 @@ fn lookup_app_account_details_or_abort(config: &Config) -> AccountDetails {
     let acc_details = lookup_app_account_details(&config).unwrap_or_else(|err| {
         abort!(
             "Error looking up details for OS user account '{}': {}",
-            config.app_account, err
+            config.app_account,
+            err
         );
     });
     debug!(
@@ -230,7 +244,8 @@ fn sanity_check_app_account_details(config: &Config, app_account_details: &Accou
             "The configured app account ({}) belongs to a primary \
              group whose GID is 0 ('{}', the root group). This is not \
              allowed, please configure a different app account.",
-            config.app_account, app_account_details.group_name
+            config.app_account,
+            app_account_details.group_name
         );
     }
 }
@@ -415,7 +430,7 @@ fn modify_group_gid(
     })
 }
 
-fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
+fn ensure_no_account_already_using_target_uid(config: &Config, target_uid: &Uid) {
     debug!(
         "Checking whether the target UID ({}) is already occupied by an existing account.",
         target_uid
@@ -431,7 +446,8 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
                 abort!(
                     "Error changing conflicting account '{}': \
                      cannot find an unused UID that's larger than {}",
-                    conflicting_account.name, target_uid
+                    conflicting_account.name,
+                    target_uid
                 );
             });
 
@@ -448,7 +464,10 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
             .unwrap_or_else(|err| {
                 abort!(
                     "Error changing conflicting account '{}' UID from {} to {}: {}",
-                    conflicting_account.name, target_uid, new_uid, err
+                    conflicting_account.name,
+                    target_uid,
+                    new_uid,
+                    err
                 );
             });
         }
@@ -460,13 +479,14 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
             abort!(
                 "Error checking whether the target UID ({}) \
                  is already occupied by an existing account: {}",
-                target_uid, err
+                target_uid,
+                err
             );
         }
     };
 }
 
-fn ensure_app_account_has_pid1_uid_and_gid(
+fn ensure_app_account_has_target_uid_and_gid(
     config: &Config,
     app_account_details: &AccountDetails,
     target_account_details: &AccountDetails,
@@ -479,21 +499,26 @@ fn ensure_app_account_has_pid1_uid_and_gid(
         target_account_details.uid,
         target_account_details.gid
     );
-    modify_account_uid_gid(config, &app_account_details.uid, &target_account_details.uid, &target_account_details.gid)
-        .unwrap_or_else(|err| {
-            abort!(
-                "Error changing account '{}' UID/GID from {}:{} to {}:{}: {}",
-                config.app_account,
-                app_account_details.uid,
-                app_account_details.gid,
-                target_account_details.uid,
-                target_account_details.gid,
-                err
-            );
-        });
+    modify_account_uid_gid(
+        config,
+        &app_account_details.uid,
+        &target_account_details.uid,
+        &target_account_details.gid,
+    )
+    .unwrap_or_else(|err| {
+        abort!(
+            "Error changing account '{}' UID/GID from {}:{} to {}:{}: {}",
+            config.app_account,
+            app_account_details.uid,
+            app_account_details.gid,
+            target_account_details.uid,
+            target_account_details.gid,
+            err
+        );
+    });
 }
 
-fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
+fn ensure_no_group_already_using_target_gid(config: &Config, target_gid: &Gid) {
     debug!(
         "Checking whether the target GID ({}) is already occupied by an existing group.",
         target_gid
@@ -510,14 +535,17 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
                     "Error changing conflicting group '{}': \
                      error finding an unused GID that's larger \
                      than {}: {}",
-                    conflicting_group.name, target_gid, err
+                    conflicting_group.name,
+                    target_gid,
+                    err
                 );
             });
             let new_gid = new_gid.unwrap_or_else(|| {
                 abort!(
                     "Error changing conflicting group '{}': \
                      cannot find an unused GID that's larger than {}",
-                    conflicting_group.name, target_gid
+                    conflicting_group.name,
+                    target_gid
                 );
             });
 
@@ -528,7 +556,10 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
             modify_group_gid(&config, &target_gid, &new_gid).unwrap_or_else(|err| {
                 abort!(
                     "Error changing conflicting group '{}' GID from {} to {}: {}",
-                    conflicting_group.name, target_gid, new_gid, err
+                    conflicting_group.name,
+                    target_gid,
+                    new_gid,
+                    err
                 );
             });
         }
@@ -540,13 +571,14 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
             abort!(
                 "Error checking whether the target GID ({}) \
                  is already occupied by an existing group: {}",
-                target_gid, err
+                target_gid,
+                err
             );
         }
     };
 }
 
-fn ensure_app_group_has_pid1_gid(
+fn ensure_app_group_has_target_gid(
     config: &Config,
     app_account_details: &AccountDetails,
     target_gid: &Gid,
@@ -558,7 +590,10 @@ fn ensure_app_group_has_pid1_gid(
     modify_group_gid(&config, &app_account_details.gid, &target_gid).unwrap_or_else(|err| {
         abort!(
             "Error changing group '{}' GID from {} to {}: {}",
-            app_account_details.group_name, app_account_details.gid, target_gid, err
+            app_account_details.group_name,
+            app_account_details.gid,
+            target_gid,
+            err
         );
     });
 }
@@ -582,7 +617,10 @@ fn main() {
     } else if target_account_details.uid == app_account_details.uid {
         debug!(
             "Target UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
-            target_account_details.uid, config.app_account, app_account_details.uid, config.app_account,
+            target_account_details.uid,
+            config.app_account,
+            app_account_details.uid,
+            config.app_account,
         );
     } else {
         debug!(
@@ -593,8 +631,8 @@ fn main() {
             target_account_details.uid,
             target_account_details.gid
         );
-        ensure_no_account_already_using_pid1_uid(&config, &target_account_details.uid);
-        ensure_app_account_has_pid1_uid_and_gid(
+        ensure_no_account_already_using_target_uid(&config, &target_account_details.uid);
+        ensure_app_account_has_target_uid_and_gid(
             &config,
             &app_account_details,
             &target_account_details,
@@ -610,15 +648,18 @@ fn main() {
     } else if target_account_details.gid == app_account_details.gid {
         debug!(
             "Target GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
-            target_account_details.gid, config.app_account, app_account_details.gid, app_account_details.group_name
+            target_account_details.gid,
+            config.app_account,
+            app_account_details.gid,
+            app_account_details.group_name
         );
     } else {
         debug!(
             "Intending to change '{}' group's GID from {} to {}.",
             app_account_details.group_name, app_account_details.gid, target_account_details.gid
         );
-        ensure_no_group_already_using_pid1_gid(&config, &target_account_details.gid);
-        ensure_app_group_has_pid1_gid(&config, &app_account_details, &target_account_details.gid);
+        ensure_no_group_already_using_target_gid(&config, &target_account_details.gid);
+        ensure_app_group_has_target_gid(&config, &app_account_details, &target_account_details.gid);
     }
 
     /* chown_target_account_home_dir(&config, &target_uid, &target_account_details.gid);
