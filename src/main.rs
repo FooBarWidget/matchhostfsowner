@@ -1,9 +1,10 @@
+mod abort;
 mod config;
 mod os_group;
 
 use config::{load_config, Config};
 use failure::Fail;
-use log::{debug, error, info, trace};
+use log::{debug, error, info, warn, trace, Level};
 use nix::unistd;
 use nix::unistd::{Gid, Uid};
 use os_group::OsGroup;
@@ -12,59 +13,89 @@ use pwd::{Passwd, PwdError};
 use simple_logger;
 use std::os::unix::fs::MetadataExt;
 use std::result::Result;
-use std::{error, fs, io, process};
+use std::{env, error, fs, path, io, process};
 
-fn initialize_logger(config: &Config) {
-    simple_logger::init_with_level(config.log_level).unwrap_or_else(|err| {
-        eprintln!("Error initializing logger: {}", err);
+fn initialize_logger() {
+    simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
+        eprintln!("*** ERROR initializing logger: {}", err);
         process::exit(1);
     });
 }
 
-#[derive(Debug, Fail)]
-#[fail(display = "Error stat()'ing /proc/1: {}", _0)]
-struct TargetUidGidLookupError(#[cause] io::Error);
+// Since this program is supposed to be run with the setuid root biit,
+// we must only allow it to be run in very specific circumstances
+// that are deemed safe.
+fn check_running_allowed() {
+    if unistd::geteuid().is_root() {
+        // If we have root privileges, then it is safe if:
+        // - We are running as PID 1.
+        // - The root privilege was not obtained via the setuid root bit.
+        if unistd::getpid().as_raw() != 1 && !unistd::getuid().is_root() {
+            abort!("This program may only be run when one \
+                of the following conditions apply:\n\
+                \n \
+                - This program is run as PID 1.\n \
+                - This program is run with root privileges (but not \
+                   via the setuid root bit).");
+        }
+    } else if !allow_non_root() {
+        // We don't have the setuid root bit set.
 
-fn lookup_target_uid_gid(config: &Config) -> Result<(Uid, Gid), TargetUidGidLookupError> {
-    if config.target_uid.is_some() && config.target_gid.is_some() {
-        debug!("Using target UID/GID specified by configuration.");
-        return Ok((config.target_uid.unwrap(), config.target_gid.unwrap()));
-    }
+        let self_exe_path = get_self_exe_path();
+        let self_exe_desc: String;
+        let self_exe_path_str: String;
+        match self_exe_path {
+            Ok(path) => {
+                self_exe_desc = path.to_string_lossy().into_owned();
+                self_exe_path_str = self_exe_desc.clone();
+            },
+            Err(err) => {
+                warn!("Error stat()ing /proc/self/exe: {}", err);
+                self_exe_desc = String::from("this program's executable file");
+                self_exe_path_str = String::from("/path-to-this-program's-exe");
+            },
+        };
 
-    if config.target_uid.is_some() {
-        debug!("Using target UID specified by configuration.");
-    } else {
-        debug!("Using target GID specified by configuration.");
-    }
-
-    if unistd::getpid().as_raw() == 1 {
-        Ok((
-            config.target_uid.unwrap_or(unistd::getuid()),
-            config.target_gid.unwrap_or(unistd::getgid()),
-        ))
-    } else {
-        debug!("Looking up target UID/GID by querying /proc/1.");
-        lookup_target_uid_gid_from_proc(config)
+        abort!("This program requires root privileges to operate.\n\
+            \n \
+             - First time running this program in this container?\n   \
+               Then this probably means that you didn't set the setuid root bit \
+               on {}. Please set it with:\n\
+               \n     \
+                 chown root: {}\n     \
+                 chmod +s {}\n\
+               \n \
+             - Not the first time?\n   \
+               Then this error is normal. For security reasons, this program \
+               may only be invoked once, so this program drops its own setuid \
+               root bit after executing once.",
+            self_exe_desc,
+            self_exe_path_str,
+            self_exe_path_str);
     }
 }
 
-fn lookup_target_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), TargetUidGidLookupError> {
-    let meta = fs::metadata("/proc/1").map_err(|err| TargetUidGidLookupError(err))?;
-    Ok((
-        config.target_uid.unwrap_or(Uid::from_raw(meta.uid())),
-        config.target_gid.unwrap_or(Gid::from_raw(meta.gid())),
-    ))
+fn get_self_exe_path() -> io::Result<path::PathBuf> {
+    fs::read_link("/proc/self/exe")
 }
 
-fn lookup_target_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
-    let (target_uid, target_gid) = lookup_target_uid_gid(&config).unwrap_or_else(|err| {
-        error!("Error looking up target UID/GID: {}", err);
-        process::exit(1);
-    });
-    debug!("Target UID/GID = {}:{}", target_uid, target_gid);
-    (target_uid, target_gid)
+fn allow_non_root() -> bool {
+    match env::var("AP1U_ALLOW_NON_ROOT") {
+        Ok(val) => config::parse_bool_str(&val).unwrap_or(false),
+        Err(env::VarError::NotPresent) => false,
+        Err(env::VarError::NotUnicode(_)) => false,
+    }
 }
 
+fn reconfigure_logger(config: &Config) {
+    log::set_max_level(config.log_level.to_level_filter());
+}
+
+fn drop_setuid_bit_on_self_exe_if_necessary() {
+    // TODO
+}
+
+#[derive(Clone)]
 struct AccountDetails {
     uid: Uid,
     gid: Gid,
@@ -73,6 +104,9 @@ struct AccountDetails {
 
 #[derive(Debug, Fail)]
 enum AccountDetailsLookupError {
+    #[fail(display = "Error stat()'ing /proc/1: {}", _0)]
+    Proc1StatError(#[cause] io::Error),
+
     #[fail(display = "Error looking up user database entry: {}", _0)]
     UserLookupError(#[cause] PwdError),
 
@@ -87,6 +121,58 @@ enum AccountDetailsLookupError {
         _0
     )]
     PrimaryGroupNotFound(Gid),
+}
+
+fn lookup_target_account_details(config: &Config) -> Result<AccountDetails, AccountDetailsLookupError> {
+    let uid: Uid;
+    let gid: Gid;
+
+
+    if config.target_uid.is_some() && config.target_gid.is_some() {
+        debug!("Using target UID/GID specified by configuration.");
+    } else if config.target_uid.is_some() {
+        debug!("Using target UID specified by configuration.");
+    } else {
+        debug!("Using target GID specified by configuration.");
+    }
+
+    if unistd::getpid().as_raw() == 1 {
+        uid = config.target_uid.unwrap_or(unistd::getuid());
+        gid = config.target_gid.unwrap_or(unistd::getgid());
+    } else {
+        debug!("Looking up target UID/GID by querying /proc/1.");
+        let (x, y) = lookup_target_uid_gid_from_proc(config)?;
+        uid = x;
+        gid = y;
+    }
+
+    let grp_entry = match OsGroup::from_gid(&gid) {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
+        Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
+    };
+
+    Ok(AccountDetails {
+        uid: uid,
+        gid: gid,
+        group_name: grp_entry.name,
+    })
+}
+
+fn lookup_target_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), AccountDetailsLookupError> {
+    let meta = fs::metadata("/proc/1").map_err(|err| AccountDetailsLookupError::Proc1StatError(err))?;
+    Ok((
+        config.target_uid.unwrap_or(Uid::from_raw(meta.uid())),
+        config.target_gid.unwrap_or(Gid::from_raw(meta.gid())),
+    ))
+}
+
+fn lookup_target_account_details_or_abort(config: &Config) -> AccountDetails {
+    let details = lookup_target_account_details(&config).unwrap_or_else(|err| {
+        abort!("Error looking up target UID/GID: {}", err);
+    });
+    debug!("Target UID/GID = {}:{}", details.uid, details.gid);
+    details
 }
 
 fn lookup_app_account_details(
@@ -118,11 +204,10 @@ fn lookup_app_account_details(
 
 fn lookup_app_account_details_or_abort(config: &Config) -> AccountDetails {
     let acc_details = lookup_app_account_details(&config).unwrap_or_else(|err| {
-        error!(
-            "Error looking up UID/GID for OS user account '{}': {}",
+        abort!(
+            "Error looking up details for OS user account '{}': {}",
             config.app_account, err
         );
-        process::exit(1);
     });
     debug!(
         "App account's ('{}') UID:GID = {}:{}",
@@ -133,22 +218,20 @@ fn lookup_app_account_details_or_abort(config: &Config) -> AccountDetails {
 
 fn sanity_check_app_account_details(config: &Config, app_account_details: &AccountDetails) {
     if app_account_details.uid.is_root() {
-        error!(
+        abort!(
             "The configured app account ({}) has UID 0 (root). \
              This is not allowed, please configure a different \
              app account.",
             config.app_account
         );
-        process::exit(1);
     }
     if app_account_details.gid.as_raw() == 0 {
-        error!(
+        abort!(
             "The configured app account ({}) belongs to a primary \
              group whose GID is 0 ('{}', the root group). This is not \
              allowed, please configure a different app account.",
             config.app_account, app_account_details.group_name
         );
-        process::exit(1);
     }
 }
 
@@ -345,12 +428,11 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
                 target_uid, conflicting_account.name
             );
             let new_uid = find_unused_uid(&target_uid).unwrap_or_else(|| {
-                error!(
+                abort!(
                     "Error changing conflicting account '{}': \
                      cannot find an unused UID that's larger than {}",
                     conflicting_account.name, target_uid
                 );
-                process::exit(1);
             });
 
             debug!(
@@ -364,11 +446,10 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
                 &Gid::from_raw(conflicting_account.gid),
             )
             .unwrap_or_else(|err| {
-                error!(
+                abort!(
                     "Error changing conflicting account '{}' UID from {} to {}: {}",
                     conflicting_account.name, target_uid, new_uid, err
                 );
-                process::exit(1);
             });
         }
         Ok(None) => debug!(
@@ -376,12 +457,11 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
             target_uid
         ),
         Err(err) => {
-            error!(
+            abort!(
                 "Error checking whether the target UID ({}) \
                  is already occupied by an existing account: {}",
                 target_uid, err
             );
-            process::exit(1);
         }
     };
 }
@@ -389,29 +469,27 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
 fn ensure_app_account_has_pid1_uid_and_gid(
     config: &Config,
     app_account_details: &AccountDetails,
-    target_uid: &Uid,
-    target_gid: &Gid,
+    target_account_details: &AccountDetails,
 ) {
     debug!(
         "Changing account '{}' UID/GID ({}:{}) to match target UID/GID ({}:{}).",
         config.app_account,
         app_account_details.uid,
         app_account_details.gid,
-        target_uid,
-        target_gid
+        target_account_details.uid,
+        target_account_details.gid
     );
-    modify_account_uid_gid(config, &app_account_details.uid, target_uid, target_gid)
+    modify_account_uid_gid(config, &app_account_details.uid, &target_account_details.uid, &target_account_details.gid)
         .unwrap_or_else(|err| {
-            error!(
+            abort!(
                 "Error changing account '{}' UID/GID from {}:{} to {}:{}: {}",
                 config.app_account,
                 app_account_details.uid,
                 app_account_details.gid,
-                target_uid,
-                target_gid,
+                target_account_details.uid,
+                target_account_details.gid,
                 err
             );
-            process::exit(1);
         });
 }
 
@@ -428,21 +506,19 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
                 target_gid, conflicting_group.name
             );
             let new_gid = find_unused_gid(&target_gid).unwrap_or_else(|err| {
-                error!(
+                abort!(
                     "Error changing conflicting group '{}': \
                      error finding an unused GID that's larger \
                      than {}: {}",
                     conflicting_group.name, target_gid, err
                 );
-                process::exit(1);
             });
             let new_gid = new_gid.unwrap_or_else(|| {
-                error!(
+                abort!(
                     "Error changing conflicting group '{}': \
                      cannot find an unused GID that's larger than {}",
                     conflicting_group.name, target_gid
                 );
-                process::exit(1);
             });
 
             debug!(
@@ -450,11 +526,10 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
                 conflicting_group.name, target_gid, new_gid
             );
             modify_group_gid(&config, &target_gid, &new_gid).unwrap_or_else(|err| {
-                error!(
+                abort!(
                     "Error changing conflicting group '{}' GID from {} to {}: {}",
                     conflicting_group.name, target_gid, new_gid, err
                 );
-                process::exit(1);
             });
         }
         Ok(None) => debug!(
@@ -462,12 +537,11 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
             target_gid
         ),
         Err(err) => {
-            error!(
+            abort!(
                 "Error checking whether the target GID ({}) \
                  is already occupied by an existing group: {}",
                 target_gid, err
             );
-            process::exit(1);
         }
     };
 }
@@ -482,31 +556,33 @@ fn ensure_app_group_has_pid1_gid(
         app_account_details.group_name, app_account_details.gid, target_gid
     );
     modify_group_gid(&config, &app_account_details.gid, &target_gid).unwrap_or_else(|err| {
-        error!(
+        abort!(
             "Error changing group '{}' GID from {} to {}: {}",
             app_account_details.group_name, app_account_details.gid, target_gid, err
         );
-        process::exit(1);
     });
 }
 
 fn main() {
+    initialize_logger();
+    check_running_allowed();
+    drop_setuid_bit_on_self_exe_if_necessary();
     let config = load_config();
-    initialize_logger(&config);
+    reconfigure_logger(&config);
 
-    let (target_uid, target_gid) = lookup_target_uid_gid_or_abort(&config);
+    let target_account_details = lookup_target_account_details_or_abort(&config);
     let mut app_account_details = lookup_app_account_details_or_abort(&config);
     sanity_check_app_account_details(&config, &app_account_details);
 
-    if target_uid.is_root() {
+    if target_account_details.uid.is_root() {
         debug!(
             "Target UID ({}) is root. Not modifying '{}' account.",
-            target_uid, config.app_account
+            target_account_details.uid, config.app_account
         );
-    } else if target_uid == app_account_details.uid {
+    } else if target_account_details.uid == app_account_details.uid {
         debug!(
             "Target UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
-            target_uid, config.app_account, app_account_details.uid, config.app_account,
+            target_account_details.uid, config.app_account, app_account_details.uid, config.app_account,
         );
     } else {
         debug!(
@@ -514,48 +590,45 @@ fn main() {
             config.app_account,
             app_account_details.uid,
             app_account_details.gid,
-            target_uid,
-            target_gid
+            target_account_details.uid,
+            target_account_details.gid
         );
-        ensure_no_account_already_using_pid1_uid(&config, &target_uid);
+        ensure_no_account_already_using_pid1_uid(&config, &target_account_details.uid);
         ensure_app_account_has_pid1_uid_and_gid(
             &config,
             &app_account_details,
-            &target_uid,
-            &target_gid,
+            &target_account_details,
         );
+        app_account_details = target_account_details.clone();
     }
 
-    if target_gid.as_raw() == 0 {
+    if target_account_details.gid.as_raw() == 0 {
         debug!(
             "Target GID ({}) is the root group. Not modifying '{}' group.",
-            target_gid, app_account_details.group_name,
+            target_account_details.gid, app_account_details.group_name,
         );
-    } else if target_gid == app_account_details.gid {
+    } else if target_account_details.gid == app_account_details.gid {
         debug!(
             "Target GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
-            target_gid, config.app_account, app_account_details.gid, app_account_details.group_name
+            target_account_details.gid, config.app_account, app_account_details.gid, app_account_details.group_name
         );
     } else {
         debug!(
             "Intending to change '{}' group's GID from {} to {}.",
-            app_account_details.group_name, app_account_details.gid, target_gid
+            app_account_details.group_name, app_account_details.gid, target_account_details.gid
         );
-        ensure_no_group_already_using_pid1_gid(&config, &target_gid);
-        ensure_app_group_has_pid1_gid(&config, &app_account_details, &target_gid);
+        ensure_no_group_already_using_pid1_gid(&config, &target_account_details.gid);
+        ensure_app_group_has_pid1_gid(&config, &app_account_details, &target_account_details.gid);
     }
 
-    //app_account_details.uid = target_uid;
-    //app_account_details.gid = target_gid;
-
-    /* chown_target_account_home_dir(&config, &target_uid, &target_gid);
+    /* chown_target_account_home_dir(&config, &target_uid, &target_account_details.gid);
     run_hooks(config.hooks_dir);
-    change_user(target_uid, target_gid);
+    change_user(target_uid, target_account_details.gid);
 
     maybe_execute_next_command(); */
 }
 
-fn chown_target_account_home(config: &Config, target_uid: &Uid, target_gid: &Gid, app_account_details: &AccountDetails) {
+/*fn chown_target_account_home(config: &Config, target_uid: &Uid, target_gid: &Gid, app_account_details: &AccountDetails) {
     //let account_details = {
 //        if target_uid == app_
 //    };
@@ -563,4 +636,4 @@ fn chown_target_account_home(config: &Config, target_uid: &Uid, target_gid: &Gid
         error!("Error looking up home directory for target UID ({}): ");
         process::exit(1);
     }); */
-}
+} */

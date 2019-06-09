@@ -1,5 +1,5 @@
 [package]
-name = "activatepid1user"
+name = "activatecontaineruid"
 version = "0.1.0"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
 edition = "2018"

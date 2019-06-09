@@ -1,4 +1,5 @@
-use log;
+use super::abort;
+use log::error;
 use nix::unistd::{Gid, Uid};
 use std::env;
 use std::env::VarError;
@@ -28,7 +29,7 @@ pub fn load_config() -> Config {
     let file_config = load_config_file_yaml();
 
     Config {
-        log_level: load_config_key_or_abort::<log::Level>(
+        log_level: load_config_key_or_abort(
             "AP1U_LOG_LEVEL",
             &file_config,
             "log_level",
@@ -36,7 +37,7 @@ pub fn load_config() -> Config {
             &parse_log_level,
             &|doc| doc.as_str().and_then(parse_log_level),
         ),
-        target_uid: load_config_key_or_abort::<Option<Uid>>(
+        target_uid: load_config_key_or_abort(
             "AP1U_TARGET_UID",
             &file_config,
             "target_uid",
@@ -44,7 +45,7 @@ pub fn load_config() -> Config {
             &parse_uid_str,
             &parse_uid_yaml,
         ),
-        target_gid: load_config_key_or_abort::<Option<Gid>>(
+        target_gid: load_config_key_or_abort(
             "AP1U_TARGET_GID",
             &file_config,
             "target_gid",
@@ -60,7 +61,7 @@ pub fn load_config() -> Config {
             &|env_val| Some(String::from(env_val)),
             &|doc| doc.clone().into_string(),
         ),
-        mock_app_account_uid: load_config_key_or_abort::<Option<Uid>>(
+        mock_app_account_uid: load_config_key_or_abort(
             "AP1U_MOCK_APP_ACCOUNT_UID",
             &file_config,
             "mock_app_account_uid",
@@ -68,7 +69,7 @@ pub fn load_config() -> Config {
             &parse_uid_str,
             &parse_uid_yaml,
         ),
-        mock_app_account_gid: load_config_key_or_abort::<Option<Gid>>(
+        mock_app_account_gid: load_config_key_or_abort(
             "AP1U_MOCK_APP_ACCOUNT_GID",
             &file_config,
             "mock_app_account_gid",
@@ -76,7 +77,7 @@ pub fn load_config() -> Config {
             &parse_gid_str,
             &parse_gid_yaml,
         ),
-        dry_run: load_config_key_or_abort::<bool>(
+        dry_run: load_config_key_or_abort(
             "AP1U_DRY_RUN",
             &file_config,
             "dry_run",
@@ -101,33 +102,29 @@ fn load_config_file_yaml() -> Yaml {
         if err.kind() == io::ErrorKind::NotFound {
             String::from("{}")
         } else {
-            eprintln!("Error reading from {}: {}", config_file_path.display(), err);
-            process::exit(1);
+            abort!("Error reading from {}: {}", config_file_path.display(), err);
         }
     });
 
     let yaml_object = YamlLoader::load_from_str(file_config_str.as_str());
     let documents = yaml_object.unwrap_or_else(|err| {
-        eprintln!("Error loading {}: {}", config_file_path.display(), err);
-        process::exit(1);
+        abort!("Error loading {}: {}", config_file_path.display(), err);
     });
 
     if documents.len() != 1 {
-        eprintln!(
+        abort!(
             "Error loading {}: the file must contain exactly 1 YAML document",
             config_file_path.display()
         );
-        process::exit(1);
     }
 
     match documents[0].as_hash() {
         Some(_) => documents[0].clone(),
         None => {
-            eprintln!(
+            abort!(
                 "Error loading {}: the file must contain a YAML key-value map",
                 config_file_path.display()
             );
-            process::exit(1);
         }
     }
 }
@@ -218,8 +215,7 @@ fn load_config_key_or_abort<'a, T>(
         config_file_val_parser,
     )
     .unwrap_or_else(|err| {
-        eprintln!("{}", err);
-        process::exit(1);
+        abort!("{}", err);
     })
 }
 
@@ -256,7 +252,7 @@ fn parse_gid_yaml(doc: &Yaml) -> Option<Option<Gid>> {
     Some(doc.clone().into_i64().map(|num| Gid::from_raw(num as u32)))
 }
 
-fn parse_bool_str(val: &str) -> Option<bool> {
+pub fn parse_bool_str(val: &str) -> Option<bool> {
     match val.to_lowercase().as_str() {
         "true" | "t" | "yes" | "y" | "1" | "on" => Some(true),
         "false" | "f" | "no" | "n" | "0" | "off" => Some(false),
