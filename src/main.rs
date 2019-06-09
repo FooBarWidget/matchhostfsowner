@@ -23,43 +23,52 @@ fn initialize_logger(config: &Config) {
 
 #[derive(Debug, Fail)]
 #[fail(display = "Error stat()'ing /proc/1: {}", _0)]
-struct Pid1UidGidLookupError(#[cause] io::Error);
+struct TargetUidGidLookupError(#[cause] io::Error);
 
-fn lookup_pid1_uid_gid(config: &Config) -> Result<(Uid, Gid), Pid1UidGidLookupError> {
-    if config.mock_uid.is_some() && config.mock_gid.is_some() {
-        Ok((config.mock_uid.unwrap(), config.mock_gid.unwrap()))
-    } else if unistd::getpid().as_raw() == 1 {
+fn lookup_target_uid_gid(config: &Config) -> Result<(Uid, Gid), TargetUidGidLookupError> {
+    if config.target_uid.is_some() && config.target_gid.is_some() {
+        debug!("Using target UID/GID specified by configuration.");
+        return Ok((config.target_uid.unwrap(), config.target_gid.unwrap()));
+    }
+
+    if config.target_uid.is_some() {
+        debug!("Using target UID specified by configuration.");
+    } else {
+        debug!("Using target GID specified by configuration.");
+    }
+
+    if unistd::getpid().as_raw() == 1 {
         Ok((
-            config.mock_uid.unwrap_or(unistd::getuid()),
-            config.mock_gid.unwrap_or(unistd::getgid()),
+            config.target_uid.unwrap_or(unistd::getuid()),
+            config.target_gid.unwrap_or(unistd::getgid()),
         ))
     } else {
-        lookup_pid1_uid_gid_from_proc(config)
+        debug!("Looking up target UID/GID by querying /proc/1.");
+        lookup_target_uid_gid_from_proc(config)
     }
 }
 
-fn lookup_pid1_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), Pid1UidGidLookupError> {
-    let meta = fs::metadata("/proc/1").map_err(|err| Pid1UidGidLookupError(err))?;
+fn lookup_target_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), TargetUidGidLookupError> {
+    let meta = fs::metadata("/proc/1").map_err(|err| TargetUidGidLookupError(err))?;
     Ok((
-        config.mock_uid.unwrap_or(Uid::from_raw(meta.uid())),
-        config.mock_gid.unwrap_or(Gid::from_raw(meta.gid())),
+        config.target_uid.unwrap_or(Uid::from_raw(meta.uid())),
+        config.target_gid.unwrap_or(Gid::from_raw(meta.gid())),
     ))
 }
 
-fn lookup_pid1_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
-    let (p1_uid, p1_gid) = lookup_pid1_uid_gid(&config).unwrap_or_else(|err| {
-        error!("Error inferring PID 1's UID/GID: {}", err);
+fn lookup_target_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
+    let (target_uid, target_gid) = lookup_target_uid_gid(&config).unwrap_or_else(|err| {
+        error!("Error looking up target UID/GID: {}", err);
         process::exit(1);
     });
-    debug!("PID 1's UID:GID = {}:{}", p1_uid, p1_gid);
-    (p1_uid, p1_gid)
+    debug!("Target UID/GID = {}:{}", target_uid, target_gid);
+    (target_uid, target_gid)
 }
 
 struct AccountDetails {
     uid: Uid,
     gid: Gid,
     group_name: String,
-    home: String,
 }
 
 #[derive(Debug, Fail)]
@@ -104,7 +113,6 @@ fn lookup_app_account_details(
             .unwrap_or(Uid::from_raw(entry.uid)),
         gid: gid,
         group_name: grp_entry.name,
-        home: entry.dir,
     })
 }
 
@@ -197,11 +205,10 @@ enum AccountModifyError {
 }
 
 type BinaryString = Vec<u8>;
-type EtcPasswdEntryModifier = Fn(&mut Vec<BinaryString>);
 
 fn modify_etc_passwd(
     dry_run: bool,
-    modifier: &EtcPasswdEntryModifier,
+    modifier: impl Fn(&mut Vec<BinaryString>),
 ) -> Result<(), AccountModifyError> {
     let content =
         fs::read("/etc/passwd").map_err(|err| AccountModifyError::PasswdReadError(err))?;
@@ -257,9 +264,7 @@ fn modify_account_uid_gid<'a>(
     new_gid: &Gid,
 ) -> Result<(), AccountModifyError> {
     let old_uid_string = old_uid.to_string();
-    let new_uid = new_uid.clone();
-    let new_gid = new_gid.clone();
-    modify_etc_passwd(config.dry_run, &move |items: &mut Vec<BinaryString>| {
+    modify_etc_passwd(config.dry_run, |items: &mut Vec<BinaryString>| {
         if items[2] == old_uid_string.as_bytes() {
             items[2] = new_uid.as_raw().to_string().as_bytes().to_vec();
             items[3] = new_gid.as_raw().to_string().as_bytes().to_vec();
@@ -320,62 +325,61 @@ fn modify_group_gid(
         fs::write("/etc/group", result).map_err(|err| AccountModifyError::GroupWriteError(err))?;
     }
 
-    let new_gid = new_gid.clone();
-    modify_etc_passwd(config.dry_run, &move |items: &mut Vec<BinaryString>| {
+    modify_etc_passwd(config.dry_run, |items: &mut Vec<BinaryString>| {
         if items[3] == old_gid_string.as_bytes() {
             items[3] = new_gid.as_raw().to_string().as_bytes().to_vec();
         }
     })
 }
 
-fn ensure_no_account_already_using_pid1_uid(config: &Config, p1_uid: &Uid) {
+fn ensure_no_account_already_using_pid1_uid(config: &Config, target_uid: &Uid) {
     debug!(
-        "Checking whether PID 1's UID ({}) is already occupied by an existing account.",
-        p1_uid
+        "Checking whether the target UID ({}) is already occupied by an existing account.",
+        target_uid
     );
-    match lookup_account_with_uid(&p1_uid) {
+    match lookup_account_with_uid(&target_uid) {
         Ok(Some(conflicting_account)) => {
             debug!(
-                "PID 1's UID ({}) already occupied by account '{}'. \
+                "Target UID ({}) already occupied by account '{}'. \
                  Will change that account's UID.",
-                p1_uid, conflicting_account.name
+                target_uid, conflicting_account.name
             );
-            let new_uid = find_unused_uid(&p1_uid).unwrap_or_else(|| {
+            let new_uid = find_unused_uid(&target_uid).unwrap_or_else(|| {
                 error!(
                     "Error changing conflicting account '{}': \
                      cannot find an unused UID that's larger than {}",
-                    conflicting_account.name, p1_uid
+                    conflicting_account.name, target_uid
                 );
                 process::exit(1);
             });
 
             debug!(
                 "Changing conflicting account '{}' UID: {} -> {}",
-                conflicting_account.name, p1_uid, new_uid
+                conflicting_account.name, target_uid, new_uid
             );
             modify_account_uid_gid(
                 &config,
-                &p1_uid,
+                &target_uid,
                 &new_uid,
                 &Gid::from_raw(conflicting_account.gid),
             )
             .unwrap_or_else(|err| {
                 error!(
                     "Error changing conflicting account '{}' UID from {} to {}: {}",
-                    conflicting_account.name, p1_uid, new_uid, err
+                    conflicting_account.name, target_uid, new_uid, err
                 );
                 process::exit(1);
             });
         }
         Ok(None) => debug!(
-            "PID 1's UID ({}) not already occupied by existing account.",
-            p1_uid
+            "Target UID ({}) not already occupied by existing account.",
+            target_uid
         ),
         Err(err) => {
             error!(
-                "Error checking whether PID 1's UID ({}) \
+                "Error checking whether the target UID ({}) \
                  is already occupied by an existing account: {}",
-                p1_uid, err
+                target_uid, err
             );
             process::exit(1);
         }
@@ -385,47 +389,50 @@ fn ensure_no_account_already_using_pid1_uid(config: &Config, p1_uid: &Uid) {
 fn ensure_app_account_has_pid1_uid_and_gid(
     config: &Config,
     app_account_details: &AccountDetails,
-    p1_uid: &Uid,
-    p1_gid: &Gid,
+    target_uid: &Uid,
+    target_gid: &Gid,
 ) {
     debug!(
-        "Changing account '{}' UID/GID ({}:{}) to match PID 1's UID/GID ({}:{}).",
-        config.app_account, app_account_details.uid, app_account_details.gid, p1_uid, p1_gid
+        "Changing account '{}' UID/GID ({}:{}) to match target UID/GID ({}:{}).",
+        config.app_account,
+        app_account_details.uid,
+        app_account_details.gid,
+        target_uid,
+        target_gid
     );
-    modify_account_uid_gid(config, &app_account_details.uid, p1_uid, p1_gid).unwrap_or_else(
-        |err| {
+    modify_account_uid_gid(config, &app_account_details.uid, target_uid, target_gid)
+        .unwrap_or_else(|err| {
             error!(
                 "Error changing account '{}' UID/GID from {}:{} to {}:{}: {}",
                 config.app_account,
                 app_account_details.uid,
                 app_account_details.gid,
-                p1_uid,
-                p1_gid,
+                target_uid,
+                target_gid,
                 err
             );
             process::exit(1);
-        },
-    );
+        });
 }
 
-fn ensure_no_group_already_using_pid1_gid(config: &Config, p1_gid: &Gid) {
+fn ensure_no_group_already_using_pid1_gid(config: &Config, target_gid: &Gid) {
     debug!(
-        "Checking whether PID 1's GID ({}) is already occupied by an existing group.",
-        p1_gid
+        "Checking whether the target GID ({}) is already occupied by an existing group.",
+        target_gid
     );
-    match OsGroup::from_gid(p1_gid) {
+    match OsGroup::from_gid(target_gid) {
         Ok(Some(conflicting_group)) => {
             debug!(
-                "PID 1's GID ({}) already occupied by group '{}'. \
+                "Target GID ({}) already occupied by group '{}'. \
                  Will change that group's GID.",
-                p1_gid, conflicting_group.name
+                target_gid, conflicting_group.name
             );
-            let new_gid = find_unused_gid(&p1_gid).unwrap_or_else(|err| {
+            let new_gid = find_unused_gid(&target_gid).unwrap_or_else(|err| {
                 error!(
                     "Error changing conflicting group '{}': \
                      error finding an unused GID that's larger \
                      than {}: {}",
-                    conflicting_group.name, p1_gid, err
+                    conflicting_group.name, target_gid, err
                 );
                 process::exit(1);
             });
@@ -433,32 +440,32 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, p1_gid: &Gid) {
                 error!(
                     "Error changing conflicting group '{}': \
                      cannot find an unused GID that's larger than {}",
-                    conflicting_group.name, p1_gid
+                    conflicting_group.name, target_gid
                 );
                 process::exit(1);
             });
 
             debug!(
                 "Changing conflicting group '{}' GID: {} -> {}",
-                conflicting_group.name, p1_gid, new_gid
+                conflicting_group.name, target_gid, new_gid
             );
-            modify_group_gid(&config, &p1_gid, &new_gid).unwrap_or_else(|err| {
+            modify_group_gid(&config, &target_gid, &new_gid).unwrap_or_else(|err| {
                 error!(
                     "Error changing conflicting group '{}' GID from {} to {}: {}",
-                    conflicting_group.name, p1_gid, new_gid, err
+                    conflicting_group.name, target_gid, new_gid, err
                 );
                 process::exit(1);
             });
         }
         Ok(None) => debug!(
-            "PID 1's GID ({}) not already occupied by existing group.",
-            p1_gid
+            "Target GID ({}) not already occupied by existing group.",
+            target_gid
         ),
         Err(err) => {
             error!(
-                "Error checking whether PID 1's GID ({}) \
+                "Error checking whether the target GID ({}) \
                  is already occupied by an existing group: {}",
-                p1_gid, err
+                target_gid, err
             );
             process::exit(1);
         }
@@ -468,16 +475,16 @@ fn ensure_no_group_already_using_pid1_gid(config: &Config, p1_gid: &Gid) {
 fn ensure_app_group_has_pid1_gid(
     config: &Config,
     app_account_details: &AccountDetails,
-    p1_gid: &Gid,
+    target_gid: &Gid,
 ) {
     debug!(
-        "Changing group '{}' GID ({}) to match PID 1's GID ({}).",
-        app_account_details.group_name, app_account_details.gid, p1_gid
+        "Changing group '{}' GID ({}) to match the target GID ({}).",
+        app_account_details.group_name, app_account_details.gid, target_gid
     );
-    modify_group_gid(&config, &app_account_details.gid, &p1_gid).unwrap_or_else(|err| {
+    modify_group_gid(&config, &app_account_details.gid, &target_gid).unwrap_or_else(|err| {
         error!(
             "Error changing group '{}' GID from {} to {}: {}",
-            app_account_details.group_name, app_account_details.gid, p1_gid, err
+            app_account_details.group_name, app_account_details.gid, target_gid, err
         );
         process::exit(1);
     });
@@ -487,51 +494,73 @@ fn main() {
     let config = load_config();
     initialize_logger(&config);
 
-    let (p1_uid, p1_gid) = lookup_pid1_uid_gid_or_abort(&config);
-    let app_account_details = lookup_app_account_details_or_abort(&config);
+    let (target_uid, target_gid) = lookup_target_uid_gid_or_abort(&config);
+    let mut app_account_details = lookup_app_account_details_or_abort(&config);
     sanity_check_app_account_details(&config, &app_account_details);
 
-    if p1_uid.is_root() {
+    if target_uid.is_root() {
         debug!(
-            "PID 1's UID ({}) is root. Not modifying '{}' account.",
-            p1_uid, config.app_account
+            "Target UID ({}) is root. Not modifying '{}' account.",
+            target_uid, config.app_account
         );
-    } else if p1_uid == app_account_details.uid {
+    } else if target_uid == app_account_details.uid {
         debug!(
-            "PID 1's UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
-            p1_uid, config.app_account, app_account_details.uid, config.app_account,
+            "Target UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
+            target_uid, config.app_account, app_account_details.uid, config.app_account,
         );
     } else {
         debug!(
             "Intending to change '{}' account's UID/GID from {}:{} to {}:{}.",
-            config.app_account, app_account_details.uid, app_account_details.gid, p1_uid, p1_gid
+            config.app_account,
+            app_account_details.uid,
+            app_account_details.gid,
+            target_uid,
+            target_gid
         );
-        ensure_no_account_already_using_pid1_uid(&config, &p1_uid);
-        ensure_app_account_has_pid1_uid_and_gid(&config, &app_account_details, &p1_uid, &p1_gid);
+        ensure_no_account_already_using_pid1_uid(&config, &target_uid);
+        ensure_app_account_has_pid1_uid_and_gid(
+            &config,
+            &app_account_details,
+            &target_uid,
+            &target_gid,
+        );
     }
 
-    if p1_gid.as_raw() == 0 {
+    if target_gid.as_raw() == 0 {
         debug!(
-            "PID 1's GID ({}) is the root group. Not modifying '{}' group.",
-            p1_gid, app_account_details.group_name,
+            "Target GID ({}) is the root group. Not modifying '{}' group.",
+            target_gid, app_account_details.group_name,
         );
-    } else if p1_gid == app_account_details.gid {
+    } else if target_gid == app_account_details.gid {
         debug!(
-            "PID 1's GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
-            p1_gid, config.app_account, app_account_details.gid, app_account_details.group_name
+            "Target GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
+            target_gid, config.app_account, app_account_details.gid, app_account_details.group_name
         );
     } else {
         debug!(
             "Intending to change '{}' group's GID from {} to {}.",
-            app_account_details.group_name, app_account_details.gid, p1_gid
+            app_account_details.group_name, app_account_details.gid, target_gid
         );
-        ensure_no_group_already_using_pid1_gid(&config, &p1_gid);
-        ensure_app_group_has_pid1_gid(&config, &app_account_details, &p1_gid);
+        ensure_no_group_already_using_pid1_gid(&config, &target_gid);
+        ensure_app_group_has_pid1_gid(&config, &app_account_details, &target_gid);
     }
 
-    /* chown_app_account_home(&config, &app_account_details);
+    //app_account_details.uid = target_uid;
+    //app_account_details.gid = target_gid;
+
+    /* chown_target_account_home_dir(&config, &target_uid, &target_gid);
     run_hooks(config.hooks_dir);
-    change_user(uid, gid);
+    change_user(target_uid, target_gid);
 
     maybe_execute_next_command(); */
+}
+
+fn chown_target_account_home(config: &Config, target_uid: &Uid, target_gid: &Gid, app_account_details: &AccountDetails) {
+    //let account_details = {
+//        if target_uid == app_
+//    };
+    /* = Passwd::from_uid(target_uid).unwrap_or_else(|err| {
+        error!("Error looking up home directory for target UID ({}): ");
+        process::exit(1);
+    }); */
 }
