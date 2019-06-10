@@ -20,6 +20,7 @@ pub struct Config {
     pub mock_app_account_uid: Option<Uid>,
     pub mock_app_account_gid: Option<Gid>,
     pub hooks_dir: PathBuf,
+    pub chown_home: bool,
     pub dry_run: bool,
 }
 
@@ -91,6 +92,15 @@ pub fn load_config() -> Config {
             PathBuf::from("/etc/activatecontaineruid/hooks.d"),
             &parse_path_str,
             &parse_path_yaml,
+        ),
+        chown_home: load_config_key_or_abort(
+            "ACU_CHOWN_HOME",
+            &file_config,
+            "chown_home",
+            true,
+            true,
+            &parse_bool_str,
+            &parse_bool_yaml,
         ),
         dry_run: load_config_key_or_abort(
             "ACU_DRY_RUN",

@@ -6,6 +6,7 @@ mod simple_logger;
 use config::{load_config, Config};
 use failure::Fail;
 use libc;
+use shell_escape;
 use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
 use os_group::OsGroup;
@@ -13,7 +14,7 @@ use pwd::{self, Passwd, PwdError};
 use std::ffi::{CString, OsString};
 use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
 use std::result::Result;
-use std::{env, fs, io, path::PathBuf, process};
+use std::{env, fs, io, path::PathBuf, process, borrow::Cow};
 
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
@@ -103,6 +104,7 @@ fn allow_non_root() -> bool {
 
 fn reconfigure_logger(config: &Config) {
     log::set_max_level(config.log_level.to_level_filter());
+    debug!("Configuration: {:#?}", config);
 }
 
 fn drop_setuid_bit_on_self_exe_if_necessary() {
@@ -148,7 +150,7 @@ fn lookup_target_account_uid_gid(config: &Config) -> Result<(Uid, Gid), Proc1Sta
 
     if config.target_uid.is_some() {
         debug!("Using target UID specified by configuration.");
-    } else {
+    } else if config.target_gid.is_some() {
         debug!("Using target GID specified by configuration.");
     }
 
@@ -676,50 +678,61 @@ fn lookup_target_account_details_or_abort(
         }
     });
     debug!(
-        "Target account is '{}' (UID/GID = {}:{}, group = {}, home = {})",
+        "Target account is '{}' (UID/GID = {}:{}, group = {}, home = {}).",
         details.name, target_uid, target_gid, details.group_name, details.home
     );
     details
 }
 
-fn chown_target_account_home_dir(config: &Config, target_account_details: &AccountDetails) {
-    let uid_gid_str = format!(
-        "{}:{}",
+fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: &AccountDetails) {
+    if !config.chown_home {
+        debug!("Skipping changing ownership of '{}' home directory.",
+            target_account_details.name);
+        return;
+    }
+
+    // The container may have mounts under the home directory.
+    // For example, when using ekidd/rust-musl-builder the user is supposed
+    // to mount the a host directory into /home/rust/src.
+    //
+    // We use 'find' instead of 'chown -R' in order not to cross filesystem
+    // boundaries.
+    let command_string = format!(
+        "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
+        shell_escape::escape(Cow::from(&target_account_details.home)),
         target_account_details.uid, target_account_details.gid
     );
-    let home = target_account_details.home.as_str();
-    debug!("Running command: chown -R {} {}", uid_gid_str, home);
+    debug!("Running command with shell: {}", command_string);
 
     if config.dry_run {
         info!(
             "Dry-run mode on, so not actually running 'chown' on {}.",
-            home
+            target_account_details.home
         );
         return;
     }
 
-    let result = process::Command::new("chown")
-        .arg("-R")
-        .arg(uid_gid_str.as_str())
-        .arg(home)
+    let result = process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command_string.as_str())
         .status();
     match result {
         Ok(status) => {
             if !status.success() {
                 abort!(
-                    "Error changing '{}' account: 'chown' command failed with exit code {}",
+                    "Error changing '{}' account: command '{}' failed with exit code {}",
                     target_account_details.name,
+                    command_string,
                     status
                         .code()
                         .map(|c| c.to_string())
-                        .unwrap_or(String::from("[unknown]"))
+                        .unwrap_or(String::from("unknown"))
                 );
             }
         }
         Err(err) => abort!(
-            "Error spawning a process for command 'chown -R {} {}': {}",
-            uid_gid_str,
-            home,
+            "Error spawning a shell process for command '{}': {}",
+            command_string,
             err
         ),
     };
@@ -800,17 +813,17 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
         match result {
             Ok(status) => {
                 if !status.success() {
-                    error!(
+                    abort!(
                         "Error running hook {}: command failed with exit code {}",
                         hook.display().to_string(),
                         status
                             .code()
                             .map(|c| c.to_string())
-                            .unwrap_or(String::from("[unknown]"))
+                            .unwrap_or(String::from("unknown"))
                     );
                 }
             }
-            Err(err) => error!(
+            Err(err) => abort!(
                 "Error spawning a process for hook {}: {}",
                 hook.display().to_string(),
                 err
@@ -843,7 +856,12 @@ fn change_user(target_account_details: &AccountDetails) {
         return;
     }
 
+    debug!("Setting process supplementary groups to those belonging to group '{}' (GID {}).",
+        target_account_details.group_name, target_account_details.gid);
     change_supplementary_groups(target_account_details);
+
+    debug!("Setting process group to '{}' (GID {}).",
+        target_account_details.group_name, target_account_details.gid);
     unistd::setgid(target_account_details.gid).unwrap_or_else(|err| {
         abort!(
             "Error changing process GID to {}: {}",
@@ -851,6 +869,9 @@ fn change_user(target_account_details: &AccountDetails) {
             err
         );
     });
+
+    debug!("Setting process user to '{}' (UID {}).",
+        target_account_details.name, target_account_details.uid);
     unistd::setuid(target_account_details.uid).unwrap_or_else(|err| {
         abort!(
             "Error changing process UID to {}: {}",
@@ -858,6 +879,7 @@ fn change_user(target_account_details: &AccountDetails) {
             err
         );
     });;
+
     env::set_var("USER", &target_account_details.name);
     env::set_var("LOGNAME", &target_account_details.name);
     env::set_var("SHELL", &target_account_details.shell);
@@ -981,7 +1003,7 @@ fn main() {
 
     let target_account_details =
         lookup_target_account_details_or_abort(&config, target_uid, target_gid, using_app_account);
-    chown_target_account_home_dir(&config, &target_account_details);
+    maybe_chown_target_account_home_dir(&config, &target_account_details);
     run_hooks(&config, &target_account_details);
     change_user(&target_account_details);
 
