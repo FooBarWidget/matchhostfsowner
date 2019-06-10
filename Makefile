@@ -17,7 +17,6 @@ static-binary: target/docker-helper/activatecontaineruid
 		-e "ACU_TARGET_GID=$$(id -g)" \
 		-e "ACU_APP_ACCOUNT=rust" \
 		-e "ACU_CHOWN_HOME=0" \
-		-e "ACU_LOG_LEVEL=debug" \
 		--user 0:0 \
 		--entrypoint /sbin/activatecontaineruid \
 		ekidd/rust-musl-builder:$(RUST_MUSL_BUILDER_VERSION) \
