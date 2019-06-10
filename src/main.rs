@@ -10,9 +10,9 @@ use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
 use os_group::OsGroup;
 use pwd::{self, Passwd, PwdError};
+use std::ffi::{CString, OsString};
 use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
 use std::result::Result;
-use std::ffi::{CString, OsString};
 use std::{env, fs, io, path::PathBuf, process};
 
 fn initialize_logger() {
@@ -52,7 +52,7 @@ fn check_running_allowed() {
                 self_exe_path_str = self_exe_desc.clone();
             }
             Err(err) => {
-                warn!("Error stat()ing /proc/self/exe: {}", err);
+                warn!("Error reading symlink /proc/self/exe: {}", err);
                 self_exe_desc = String::from("this program's executable file");
                 self_exe_path_str = String::from("/path-to-this-program's-exe");
             }
@@ -82,8 +82,15 @@ fn check_running_allowed() {
     }
 }
 
+#[cfg(any(target_os = "linux"))]
 fn get_self_exe_path() -> io::Result<PathBuf> {
     fs::read_link("/proc/self/exe")
+}
+
+#[cfg(not(any(target_os = "linux")))]
+fn get_self_exe_path() -> io::Result<PathBuf> {
+    let args = env::args_os().collect::<Vec<OsString>>();
+    Ok(PathBuf::from(&args[0]))
 }
 
 fn allow_non_root() -> bool {
@@ -99,7 +106,34 @@ fn reconfigure_logger(config: &Config) {
 }
 
 fn drop_setuid_bit_on_self_exe_if_necessary() {
-    // TODO
+    let path = get_self_exe_path().unwrap_or_else(|err| {
+        abort!(
+            "Error dropping setuid bit on this program's own executable: \
+             error reading symlink /proc/self/exe: {}",
+            err
+        );
+    });
+    let meta = fs::metadata(&path).unwrap_or_else(|err| {
+        abort!(
+            "Error dropping setuid bit on this program's own executable: \
+             error stat()'ing /proc/self/exe: {}",
+            err
+        );
+    });
+    let perms = meta.permissions();
+    if (perms.mode() & 0o4000) == 0 {
+        debug!("No setuid bit detected on {}.", path.display().to_string());
+    } else {
+        debug!("Dropping setuid bit on {}.", path.display().to_string());
+        let mut perms = perms;
+        perms.set_mode(perms.mode() & !0o4000);
+        fs::set_permissions(path, perms).unwrap_or_else(|err| {
+            abort!(
+                "Error dropping setuid bit on this program's own executable: {}",
+                err
+            );
+        });
+    }
 }
 
 #[derive(Debug, Fail)]
@@ -711,13 +745,13 @@ fn list_executable_files_sorted(dir: &PathBuf) -> Result<Vec<PathBuf>, ListDirEr
     for entry in entries {
         let entry =
             entry.map_err(|err| ListDirError::ReadDirEntryError(dir.display().to_string(), err))?;
-        let full_path = dir.join(entry.path());
-        let metadata = full_path
+        let metadata = entry
+            .path()
             .metadata()
-            .map_err(|err| ListDirError::QueryMetaError(full_path.display().to_string(), err))?;
+            .map_err(|err| ListDirError::QueryMetaError(entry.path().display().to_string(), err))?;
 
-        if metadata.is_file() && (metadata.permissions().mode() & 0111) != 0 {
-            result.push(full_path);
+        if metadata.is_file() && (metadata.permissions().mode() & 0o111) != 0 {
+            result.push(entry.path());
         }
     }
 
@@ -789,7 +823,10 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
 fn change_supplementary_groups(target_account_details: &AccountDetails) {
     use std::ffi;
     let user_c = ffi::CString::new(target_account_details.name).unwrap_or_else(|err| {
-        abort!("Error changing process supplementary groups: error allocating a C string: {}", err);
+        abort!(
+            "Error changing process supplementary groups: error allocating a C string: {}",
+            err
+        );
     });
     unistd::initgroups(&user_c, target_account_details.gid).unwrap_or_else(|err| {
         abort!("Error changing process supplementary groups: {}", err);
@@ -809,10 +846,18 @@ fn change_user(target_account_details: &AccountDetails) {
 
     change_supplementary_groups(target_account_details);
     unistd::setgid(target_account_details.gid).unwrap_or_else(|err| {
-        abort!("Error changing process GID to {}: {}", target_account_details.gid, err);
+        abort!(
+            "Error changing process GID to {}: {}",
+            target_account_details.gid,
+            err
+        );
     });
     unistd::setuid(target_account_details.uid).unwrap_or_else(|err| {
-        abort!("Error changing process UID to {}: {}", target_account_details.uid, err);
+        abort!(
+            "Error changing process UID to {}: {}",
+            target_account_details.uid,
+            err
+        );
     });;
     env::set_var("USER", &target_account_details.name);
     env::set_var("LOGNAME", &target_account_details.name);
@@ -828,11 +873,18 @@ fn maybe_execute_next_command(target_account_details: &AccountDetails) {
             env::args().skip(1).collect::<Vec<String>>().join(" ")
         }
 
-        debug!("Executing command specified by CLI arguments: {}", format_args());
+        debug!(
+            "Executing command specified by CLI arguments: {}",
+            format_args()
+        );
 
         let exec_args = args.iter().skip(1).map(|arg| {
             CString::new(arg.clone().into_vec()).unwrap_or_else(|err| {
-                abort!("Error executing command '{}': error allocating C string: {}", format_args(), err);
+                abort!(
+                    "Error executing command '{}': error allocating C string: {}",
+                    format_args(),
+                    err
+                );
             })
         });
         let exec_args: Vec<CString> = exec_args.collect();
@@ -840,16 +892,25 @@ fn maybe_execute_next_command(target_account_details: &AccountDetails) {
         unistd::execvp(&exec_args[0], &exec_args).unwrap_or_else(|err| {
             abort!("Error executing command '{}': {}", format_args(), err);
         });
-
     } else if unistd::getpid().as_raw() == 1 {
-        debug!("We are PID 1, and no CLI arguments provided, so executing shell: {}", target_account_details.shell);
+        debug!(
+            "We are PID 1, and no CLI arguments provided, so executing shell: {}",
+            target_account_details.shell
+        );
         let shell = CString::new(target_account_details.shell.clone()).unwrap_or_else(|err| {
-            abort!("Error executing command '{}': error allocating C string: {}", target_account_details.shell, err);
+            abort!(
+                "Error executing command '{}': error allocating C string: {}",
+                target_account_details.shell,
+                err
+            );
         });
         unistd::execvp(&shell.clone(), &vec![shell]).unwrap_or_else(|err| {
-            abort!("Error executing command '{}': {}", target_account_details.shell, err);
+            abort!(
+                "Error executing command '{}': {}",
+                target_account_details.shell,
+                err
+            );
         });
-
     } else {
         debug!("We are not PID 1, and no CLI arguments provided, so exiting without executing next command.");
     }
@@ -858,9 +919,9 @@ fn maybe_execute_next_command(target_account_details: &AccountDetails) {
 fn main() {
     initialize_logger();
     check_running_allowed();
-    drop_setuid_bit_on_self_exe_if_necessary();
     let config = load_config();
     reconfigure_logger(&config);
+    drop_setuid_bit_on_self_exe_if_necessary();
 
     let mut using_app_account = false;
     let (target_uid, target_gid) = lookup_target_account_uid_gid_or_abort(&config);
