@@ -1,5 +1,6 @@
-.PHONE: static-binary
+.PHONE: static-binary package
 
+VERSION := $(shell grep '^version' Cargo.toml | cut -d '=' -f 2 | sed 's/[ "]//g')
 RUST_MUSL_BUILDER_VERSION := 1.35.0
 TTY := $(shell if tty -s; then echo '-ti'; fi)
 
@@ -15,3 +16,6 @@ static-binary:
 		-v "$$(pwd):/home/rust/src:delegated" \
 		ekidd/rust-musl-builder:$(RUST_MUSL_BUILDER_VERSION) \
 		strip --strip-all /home/rust/src/target/x86_64-unknown-linux-musl/release/activatecontaineruid
+
+package: target/x86_64-unknown-linux-musl/release/activatecontaineruid
+	gzip --best < target/x86_64-unknown-linux-musl/release/activatecontaineruid > target/x86_64-unknown-linux-musl/release/activatecontaineruid-$(VERSION)-x86_64-linux.gz
