@@ -821,8 +821,7 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
 
 #[cfg(not(any(target_os = "ios", target_os = "macos")))]
 fn change_supplementary_groups(target_account_details: &AccountDetails) {
-    use std::ffi;
-    let user_c = ffi::CString::new(target_account_details.name).unwrap_or_else(|err| {
+    let user_c = CString::new(target_account_details.name.as_bytes()).unwrap_or_else(|err| {
         abort!(
             "Error changing process supplementary groups: error allocating a C string: {}",
             err

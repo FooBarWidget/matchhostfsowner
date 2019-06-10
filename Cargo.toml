@@ -1,6 +1,6 @@
 [package]
 name = "activatecontaineruid"
-version = "0.1.0"
+version = "0.9.0"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
 edition = "2018"
 
@@ -13,7 +13,7 @@ panic = "abort"
 
 [dependencies]
 yaml-rust = "^0.4"
-chrono = "*"
+chrono = "^0.4.0"
 colored = "^1.6"
 log = { version = "^0.4.6", features = ["std"] }
 nix = "^0.14.0"
