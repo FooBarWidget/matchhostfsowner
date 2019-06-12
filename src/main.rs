@@ -12,7 +12,7 @@ use os_group::OsGroup;
 use pwd::{self, Passwd, PwdError};
 use shell_escape;
 use std::ffi::{CString, OsString};
-use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
+use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt, process::CommandExt};
 use std::result::Result;
 use std::{borrow::Cow, env, fs, io, path::PathBuf, process};
 
@@ -28,15 +28,16 @@ fn initialize_logger() {
 // that are deemed safe.
 fn check_running_allowed() {
     if unistd::geteuid().is_root() {
-        // If we have root privileges, then it is safe if:
-        // - We are running as PID 1.
-        // - The root privilege was not obtained via the setuid root bit.
-        if unistd::getpid().as_raw() != 1 && !unistd::getuid().is_root() {
+        if unistd::getpid().as_raw() != 1
+            && !is_child_of_pid1_docker_init()
+            && !unistd::getuid().is_root()
+        {
             abort!(
                 "This program may only be run when one \
                  of the following conditions apply:\n\
                  \n \
                  - This program is run as PID 1.\n \
+                 - This program is a child of PID 1, and PID 1 is the Docker init process /dev/init.\n \
                  - This program is run with root privileges (but not \
                  via the setuid root bit)."
             );
@@ -81,6 +82,62 @@ fn check_running_allowed() {
             self_exe_path_str
         );
     }
+}
+
+fn is_child_of_pid1_docker_init() -> bool {
+    if unistd::getppid().as_raw() != 1 {
+        return false;
+    }
+
+    // For some reason, setuid root binaries cannot readlink("/proc/1/exe")
+    // when the container is started with --user. Reading that symlink requires
+    // the effective UID/GID to be the same as PID 1's UID/GID. So we spawn a
+    // subprocess that drops our effective UID/GID, leaving a normal UID/GID
+    // that's the same as PID 1's.
+    let result = unsafe {
+        process::Command::new("readlink")
+            .arg("-v")
+            .arg("/proc/1/exe")
+            .stderr(process::Stdio::inherit())
+            .pre_exec(drop_euid_egid_during_pre_exec)
+            .output()
+    };
+    match result {
+        Ok(output) => {
+            if output.status.success() {
+                output.stdout == b"/dev/init\n"
+            } else {
+                warn!(
+                    "Error determining whether PID 1 is the Docker init process \
+                     /dev/init: subprocess 'readlink /proc/1/exe' failed with code {}",
+                    output
+                        .status
+                        .code()
+                        .map(|c| c.to_string())
+                        .unwrap_or(String::from("unknown"))
+                );
+                false
+            }
+        }
+        Err(err) => {
+            warn!(
+                "Error determining whether PID 1 is the Docker init process \
+                 /dev/init: error spawning subprocess 'readlink /proc/1/exe': {}",
+                err
+            );
+            false
+        }
+    }
+}
+
+fn drop_euid_egid_during_pre_exec() -> io::Result<()> {
+    fn nix_to_io_error(err: nix::Error) -> io::Error {
+        io::Error::new(io::ErrorKind::Other, format!("{}", err))
+    }
+
+    unistd::setgid(unistd::getgid()).map_err(nix_to_io_error)?;
+    unistd::setuid(unistd::getuid()).map_err(nix_to_io_error)?;
+    Ok(())
 }
 
 #[cfg(any(target_os = "linux"))]
