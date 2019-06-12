@@ -138,7 +138,7 @@ fn drop_setuid_root_bit_on_self_exe_if_necessary() {
     } else {
         debug!("Dropping setuid bit on {}.", path.display().to_string());
         let mut perms = perms;
-        perms.set_mode(perms.mode() & !0o4000);
+        perms.set_mode(perms.mode() & !0o6000);
         fs::set_permissions(path, perms).unwrap_or_else(|err| {
             abort!(
                 "Error dropping setuid bit on this program's own executable: {}",
