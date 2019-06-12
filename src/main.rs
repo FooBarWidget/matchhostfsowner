@@ -107,7 +107,17 @@ fn reconfigure_logger(config: &Config) {
     debug!("Configuration: {:#?}", config);
 }
 
-fn drop_setuid_bit_on_self_exe_if_necessary() {
+fn debug_print_process_privileges() {
+    debug!(
+        "Current process's privileges: uid={} gid={} euid={} egid={}",
+        unistd::getuid(),
+        unistd::getgid(),
+        unistd::geteuid(),
+        unistd::getegid()
+    );
+}
+
+fn drop_setuid_root_bit_on_self_exe_if_necessary() {
     let path = get_self_exe_path().unwrap_or_else(|err| {
         abort!(
             "Error dropping setuid bit on this program's own executable: \
@@ -272,6 +282,40 @@ fn sanity_check_app_account_details(config: &Config, app_account_details: &Accou
             app_account_details.group_name
         );
     }
+}
+
+// If we got root privileges via the setuid root bit, then
+// we must `setgid(geteuid())` and `setuid(geteuid())` so that
+// child processes (e.g. hooks) also get root privileges.
+fn embrace_setuid_bit_privileges_if_provided() {
+    if unistd::getuid() == unistd::geteuid() || !unistd::geteuid().is_root() {
+        debug!("No setuid root bit privileges detected.");
+        return;
+    }
+
+    debug!(
+        "Synchronizing process GID with effective GID ({}).",
+        unistd::getegid()
+    );
+    unistd::setgid(unistd::getegid()).unwrap_or_else(|err| {
+        abort!(
+            "Error changing process GID to {}: {}",
+            unistd::getegid(),
+            err
+        );
+    });
+
+    debug!(
+        "Synchronizing process UID with effective UID ({}).",
+        unistd::geteuid()
+    );
+    unistd::setuid(unistd::geteuid()).unwrap_or_else(|err| {
+        abort!(
+            "Error changing process UID to {}: {}",
+            unistd::geteuid(),
+            err
+        );
+    });
 }
 
 fn lookup_account_with_uid(uid: Uid) -> Result<Option<Passwd>, pwd::PwdError> {
@@ -951,12 +995,14 @@ fn main() {
     check_running_allowed();
     let config = load_config();
     reconfigure_logger(&config);
-    drop_setuid_bit_on_self_exe_if_necessary();
+    debug_print_process_privileges();
+    drop_setuid_root_bit_on_self_exe_if_necessary();
 
     let mut using_app_account = false;
     let (target_uid, target_gid) = lookup_target_account_uid_gid_or_abort(&config);
     let app_account_details = lookup_app_account_details_or_abort(&config);
     sanity_check_app_account_details(&config, &app_account_details);
+    embrace_setuid_bit_privileges_if_provided();
 
     if target_uid.is_root() {
         debug!(
