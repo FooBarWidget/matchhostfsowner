@@ -24,7 +24,7 @@ impl Log for SimpleLogger {
                     Level::Trace => record.level().to_string().normal(),
                 }
             };
-            println!(
+            eprintln!(
                 "{} {:<5} [{}] {}",
                 Local::now().format("%Y-%m-%d %H:%M:%S,%3f"),
                 level_string,
