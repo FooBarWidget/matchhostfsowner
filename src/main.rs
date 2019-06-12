@@ -6,15 +6,15 @@ mod simple_logger;
 use config::{load_config, Config};
 use failure::Fail;
 use libc;
-use shell_escape;
 use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
 use os_group::OsGroup;
 use pwd::{self, Passwd, PwdError};
+use shell_escape;
 use std::ffi::{CString, OsString};
 use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
 use std::result::Result;
-use std::{env, fs, io, path::PathBuf, process, borrow::Cow};
+use std::{borrow::Cow, env, fs, io, path::PathBuf, process};
 
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
@@ -686,8 +686,10 @@ fn lookup_target_account_details_or_abort(
 
 fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: &AccountDetails) {
     if !config.chown_home {
-        debug!("Skipping changing ownership of '{}' home directory.",
-            target_account_details.name);
+        debug!(
+            "Skipping changing ownership of '{}' home directory.",
+            target_account_details.name
+        );
         return;
     }
 
@@ -700,7 +702,8 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
     let command_string = format!(
         "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
         shell_escape::escape(Cow::from(&target_account_details.home)),
-        target_account_details.uid, target_account_details.gid
+        target_account_details.uid,
+        target_account_details.gid
     );
     debug!("Running command with shell: {}", command_string);
 
@@ -856,12 +859,16 @@ fn change_user(target_account_details: &AccountDetails) {
         return;
     }
 
-    debug!("Setting process supplementary groups to those belonging to group '{}' (GID {}).",
-        target_account_details.group_name, target_account_details.gid);
+    debug!(
+        "Setting process supplementary groups to those belonging to group '{}' (GID {}).",
+        target_account_details.group_name, target_account_details.gid
+    );
     change_supplementary_groups(target_account_details);
 
-    debug!("Setting process group to '{}' (GID {}).",
-        target_account_details.group_name, target_account_details.gid);
+    debug!(
+        "Setting process group to '{}' (GID {}).",
+        target_account_details.group_name, target_account_details.gid
+    );
     unistd::setgid(target_account_details.gid).unwrap_or_else(|err| {
         abort!(
             "Error changing process GID to {}: {}",
@@ -870,8 +877,10 @@ fn change_user(target_account_details: &AccountDetails) {
         );
     });
 
-    debug!("Setting process user to '{}' (UID {}).",
-        target_account_details.name, target_account_details.uid);
+    debug!(
+        "Setting process user to '{}' (UID {}).",
+        target_account_details.name, target_account_details.uid
+    );
     unistd::setuid(target_account_details.uid).unwrap_or_else(|err| {
         abort!(
             "Error changing process UID to {}: {}",
