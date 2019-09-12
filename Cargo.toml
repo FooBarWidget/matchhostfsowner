@@ -1,6 +1,6 @@
 [package]
 name = "activatecontaineruid"
-version = "0.9.1"
+version = "0.9.2"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
 edition = "2018"
 
