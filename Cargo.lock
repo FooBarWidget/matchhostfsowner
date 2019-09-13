@@ -2,7 +2,7 @@
 # It is not intended for manual editing.
 [[package]]
 name = "activatecontaineruid"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "chrono 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "colored 1.8.0 (registry+https://github.com/rust-lang/crates.io-index)",

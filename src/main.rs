@@ -38,7 +38,7 @@ fn check_running_allowed() {
                  \n \
                  - This program is run as PID 1.\n \
                  - This program is a child of PID 1, and PID 1 is the Docker \
-                 init process (/dev/init, /sbin/docker-init).\n \
+                 init process (/dev/init, /(usr/)sbin/docker-init).\n \
                  - This program is run with root privileges (but not \
                  via the setuid root bit)."
             );
@@ -106,7 +106,9 @@ fn is_child_of_pid1_docker_init() -> bool {
     match result {
         Ok(output) => {
             if output.status.success() {
-                output.stdout == b"/dev/init\n" || output.stdout == b"/sbin/docker-init\n"
+                output.stdout == b"/dev/init\n"
+                    || output.stdout == b"/sbin/docker-init\n"
+                    || output.stdout == b"/usr/sbin/docker-init\n"
             } else {
                 warn!(
                     "Error determining whether PID 1 is the Docker init process \
