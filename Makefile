@@ -42,6 +42,6 @@ package: target/rust-musl-builder/x86_64-unknown-linux-musl/release/activatecont
 target/docker-helper/activatecontaineruid:
 	mkdir -p target/docker-helper
 	curl -sSL -o target/docker-helper/activatecontaineruid.gz \
-		https://github.com/fullstaq-labs/activatecontaineruid/releases/download/v0.9.2/activatecontaineruid-0.9.2-x86_64-linux.gz
+		https://github.com/fullstaq-labs/activatecontaineruid/releases/download/v0.9.3/activatecontaineruid-0.9.3-x86_64-linux.gz
 	gunzip target/docker-helper/activatecontaineruid.gz
 	chmod +x target/docker-helper/activatecontaineruid
