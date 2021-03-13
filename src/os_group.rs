@@ -2,6 +2,7 @@ use failure::Fail;
 use libc;
 use libc::{c_char, c_int, ssize_t};
 use nix::unistd::Gid;
+use core::mem;
 use std::ffi::CStr;
 use std::option::Option;
 use std::result::Result;
@@ -23,13 +24,14 @@ impl OsGroup {
         // http://tomlee.co/2012/10/problems-with-large-linux-unix-groups-and-getgrgid_r-getgrnam_r/
         let buffer_size = OsGroup::get_buffer_size();
         let buffer = CBuffer::new(buffer_size);
-        let mut group_struct: libc::group = unsafe { std::mem::uninitialized() };
+        let mut group_struct_mem = mem::MaybeUninit::<libc::group>::uninit();
+        let group_struct: *mut libc::group = group_struct_mem.as_mut_ptr();
         let mut output = std::ptr::null_mut::<libc::group>();
 
         let code = unsafe {
             libc::getgrgid_r(
                 gid.as_raw() as libc::gid_t,
-                &mut group_struct,
+                group_struct,
                 buffer.ptr,
                 buffer.size,
                 &mut output,
@@ -39,8 +41,12 @@ impl OsGroup {
             if output.is_null() {
                 Ok(None)
             } else {
+                let name = unsafe {
+                    group_struct_mem.assume_init();
+                    (*group_struct).gr_name
+                };
                 Ok(Some(OsGroup {
-                    name: OsGroup::c_char_to_string(group_struct.gr_name),
+                    name: OsGroup::c_char_to_string(name),
                 }))
             }
         } else {
