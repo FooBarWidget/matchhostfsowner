@@ -76,7 +76,7 @@ fn check_running_allowed() {
              may only be invoked once, so this program drops its own setuid \
              root bit after executing once.\n\
              \n \
-             - Hint: set ACU_ALLOW_NON_ROOT=1 to force running this \
+             - Hint: set MHF_ALLOW_NON_ROOT=1 to force running this \
              program despite not having root privileges.",
             self_exe_desc,
             self_exe_path_str,
@@ -155,7 +155,7 @@ fn get_self_exe_path() -> io::Result<PathBuf> {
 }
 
 fn allow_non_root() -> bool {
-    match env::var("ACU_ALLOW_NON_ROOT") {
+    match env::var("MHF_ALLOW_NON_ROOT") {
         Ok(val) => config::parse_bool_str(&val).unwrap_or(false),
         Err(env::VarError::NotPresent) => false,
         Err(env::VarError::NotUnicode(_)) => false,
@@ -911,11 +911,11 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
         let target_uid_string = target_account_details.uid.to_string();
         let target_gid_string = target_account_details.uid.to_string();
         let result = process::Command::new(&hook)
-            .env("ACU_TARGET_UID", &target_uid_string)
-            .env("ACU_TARGET_GID", &target_gid_string)
-            .env("ACU_TARGET_USER", &target_account_details.name)
-            .env("ACU_TARGET_GROUP", &target_account_details.group_name)
-            .env("ACU_TARGET_HOME", &target_account_details.home)
+            .env("MHF_TARGET_UID", &target_uid_string)
+            .env("MHF_TARGET_GID", &target_gid_string)
+            .env("MHF_TARGET_USER", &target_account_details.name)
+            .env("MHF_TARGET_GROUP", &target_account_details.group_name)
+            .env("MHF_TARGET_HOME", &target_account_details.home)
             .status();
         match result {
             Ok(status) => {

@@ -24,14 +24,14 @@ pub struct Config {
     pub dry_run: bool,
 }
 
-pub const DEFAULT_CONFIG_FILE_PATH: &str = "/etc/activatecontaineruid/config.yml";
+pub const DEFAULT_CONFIG_FILE_PATH: &str = "/etc/matchhostfsowner/config.yml";
 
 pub fn load_config() -> Config {
     let file_config = load_config_file_yaml();
 
     Config {
         log_level: load_config_key_or_abort(
-            "ACU_LOG_LEVEL",
+            "MHF_LOG_LEVEL",
             &file_config,
             "log_level",
             true,
@@ -40,7 +40,7 @@ pub fn load_config() -> Config {
             &|doc| doc.as_str().and_then(parse_log_level),
         ),
         target_uid: load_config_key_or_abort(
-            "ACU_TARGET_UID",
+            "MHF_TARGET_UID",
             &file_config,
             "target_uid",
             false,
@@ -49,7 +49,7 @@ pub fn load_config() -> Config {
             &parse_uid_yaml,
         ),
         target_gid: load_config_key_or_abort(
-            "ACU_TARGET_GID",
+            "MHF_TARGET_GID",
             &file_config,
             "target_gid",
             false,
@@ -58,7 +58,7 @@ pub fn load_config() -> Config {
             &parse_gid_yaml,
         ),
         app_account: load_config_key_or_abort(
-            "ACU_APP_ACCOUNT",
+            "MHF_APP_ACCOUNT",
             &file_config,
             "app_account",
             false,
@@ -67,7 +67,7 @@ pub fn load_config() -> Config {
             &|doc| doc.clone().into_string(),
         ),
         mock_app_account_uid: load_config_key_or_abort(
-            "ACU_MOCK_APP_ACCOUNT_UID",
+            "MHF_MOCK_APP_ACCOUNT_UID",
             &file_config,
             "mock_app_account_uid",
             false,
@@ -76,7 +76,7 @@ pub fn load_config() -> Config {
             &parse_uid_yaml,
         ),
         mock_app_account_gid: load_config_key_or_abort(
-            "ACU_MOCK_APP_ACCOUNT_GID",
+            "MHF_MOCK_APP_ACCOUNT_GID",
             &file_config,
             "mock_app_account_gid",
             false,
@@ -85,16 +85,16 @@ pub fn load_config() -> Config {
             &parse_gid_yaml,
         ),
         hooks_dir: load_config_key_or_abort(
-            "ACU_HOOKS_DIR",
+            "MHF_HOOKS_DIR",
             &file_config,
             "hooks_dir",
             false,
-            PathBuf::from("/etc/activatecontaineruid/hooks.d"),
+            PathBuf::from("/etc/matchhostfsowner/hooks.d"),
             &parse_path_str,
             &parse_path_yaml,
         ),
         chown_home: load_config_key_or_abort(
-            "ACU_CHOWN_HOME",
+            "MHF_CHOWN_HOME",
             &file_config,
             "chown_home",
             true,
@@ -103,7 +103,7 @@ pub fn load_config() -> Config {
             &parse_bool_yaml,
         ),
         dry_run: load_config_key_or_abort(
-            "ACU_DRY_RUN",
+            "MHF_DRY_RUN",
             &file_config,
             "dry_run",
             true,
@@ -119,11 +119,11 @@ fn got_root_via_setuid_bit() -> bool {
 }
 
 fn get_config_file_path() -> PathBuf {
-    match env::var_os("ACU_CONFIG_FILE") {
+    match env::var_os("MHF_CONFIG_FILE") {
         Some(val) => {
             if got_root_via_setuid_bit() {
                 warn!(
-                    "Ignoring ACU_CONFIG_FILE env var because we got \
+                    "Ignoring MHF_CONFIG_FILE env var because we got \
                      root privileges via the setuid root bit. Will only \
                      load configuration from {}.",
                     DEFAULT_CONFIG_FILE_PATH
