@@ -991,7 +991,7 @@ fn change_user(target_account_details: &AccountDetails) {
             target_account_details.uid,
             err
         );
-    });;
+    });
 
     env::set_var("USER", &target_account_details.name);
     env::set_var("LOGNAME", &target_account_details.name);
