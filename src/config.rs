@@ -197,8 +197,8 @@ impl<'a> fmt::Display for ConfigLoadError<'a> {
 
 impl<'a> Error for ConfigLoadError<'a> {}
 
-type EnvValParser<T> = Fn(&str) -> Option<T>;
-type ConfigFileValParser<T> = Fn(&Yaml) -> Option<T>;
+type EnvValParser<T> = dyn Fn(&str) -> Option<T>;
+type ConfigFileValParser<T> = dyn Fn(&Yaml) -> Option<T>;
 
 fn load_config_key<'a, T: Clone>(
     env_key: &'a str,
