@@ -630,11 +630,7 @@ fn ensure_app_account_has_host_uid_and_gid(
 ) {
     debug!(
         "Changing account '{}' UID/GID ({}:{}) to match host UID/GID ({}:{}).",
-        config.app_account,
-        app_account_details.uid,
-        app_account_details.gid,
-        host_uid,
-        host_gid
+        config.app_account, app_account_details.uid, app_account_details.gid, host_uid, host_gid
     );
     modify_account_uid_gid(config, app_account_details.uid, host_uid, host_gid).unwrap_or_else(
         |err| {
@@ -1084,12 +1080,7 @@ fn main() {
             host_gid
         );
         ensure_no_account_already_using_host_uid(&config, host_uid);
-        ensure_app_account_has_host_uid_and_gid(
-            &config,
-            &app_account_details,
-            host_uid,
-            host_gid,
-        );
+        ensure_app_account_has_host_uid_and_gid(&config, &app_account_details, host_uid, host_gid);
         using_app_account = true;
     }
 

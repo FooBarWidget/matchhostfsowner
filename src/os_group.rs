@@ -1,8 +1,8 @@
+use core::mem;
 use failure::Fail;
 use libc;
 use libc::{c_char, c_int, ssize_t};
 use nix::unistd::Gid;
-use core::mem;
 use std::ffi::CStr;
 use std::option::Option;
 use std::result::Result;
