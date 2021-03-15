@@ -1,7 +1,7 @@
 .PHONE: static-binary package
 
 VERSION := $(shell grep '^version' Cargo.toml | cut -d '=' -f 2 | sed 's/[ "]//g')
-RUST_MUSL_BUILDER_VERSION := 1.35.0
+RUST_MUSL_BUILDER_VERSION := 1.50.0
 TTY := $(shell if tty -s; then echo '-ti'; fi)
 
 static-binary: target/docker-helper/matchhostfsowner
@@ -42,6 +42,6 @@ package: target/rust-musl-builder/x86_64-unknown-linux-musl/release/matchhostfso
 target/docker-helper/matchhostfsowner:
 	mkdir -p target/docker-helper
 	curl -sSL -o target/docker-helper/matchhostfsowner.gz \
-		https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.3/matchhostfsowner-0.9.3-x86_64-linux.gz
+		https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.4/matchhostfsowner-0.9.4-x86_64-linux.gz
 	gunzip target/docker-helper/matchhostfsowner.gz
 	chmod +x target/docker-helper/matchhostfsowner
