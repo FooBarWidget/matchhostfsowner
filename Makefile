@@ -13,8 +13,8 @@ static-binary: target/docker-helper/matchhostfsowner
 		-v "$$(pwd)/target/rust-musl-builder-cache/cargo-registry:/home/rust/.cargo/registry:delegated" \
 		-v "$$(pwd)/target/docker-helper/matchhostfsowner:/sbin/matchhostfsowner:delegated" \
 		-v "$$(pwd)/release-scripts/hooks.d:/etc/matchhostfsowner/hooks.d:delegated" \
-		-e "MHF_TARGET_UID=$$(id -u)" \
-		-e "MHF_TARGET_GID=$$(id -g)" \
+		-e "MHF_HOST_UID=$$(id -u)" \
+		-e "MHF_HOST_GID=$$(id -g)" \
 		-e "MHF_APP_ACCOUNT=rust" \
 		-e "MHF_CHOWN_HOME=0" \
 		--user 0:0 \
@@ -26,8 +26,8 @@ static-binary: target/docker-helper/matchhostfsowner
 		-v "$$(pwd)/target/rust-musl-builder:/home/rust/src/target:delegated" \
 		-v "$$(pwd)/target/docker-helper/matchhostfsowner:/sbin/matchhostfsowner:delegated" \
 		-v "$$(pwd)/release-scripts/hooks.d:/etc/matchhostfsowner/hooks.d:delegated" \
-		-e "MHF_TARGET_UID=$$(id -u)" \
-		-e "MHF_TARGET_GID=$$(id -g)" \
+		-e "MHF_HOST_UID=$$(id -u)" \
+		-e "MHF_HOST_GID=$$(id -g)" \
 		-e "MHF_APP_ACCOUNT=rust" \
 		-e "MHF_CHOWN_HOME=0" \
 		--user 0:0 \
