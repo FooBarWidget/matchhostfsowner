@@ -16,7 +16,6 @@ static-binary: target/docker-helper/matchhostfsowner
 		-e "MHF_HOST_UID=$$(id -u)" \
 		-e "MHF_HOST_GID=$$(id -g)" \
 		-e "MHF_APP_ACCOUNT=rust" \
-		-e "MHF_CHOWN_HOME=0" \
 		--user 0:0 \
 		--entrypoint /sbin/matchhostfsowner \
 		ekidd/rust-musl-builder:$(RUST_MUSL_BUILDER_VERSION) \
@@ -25,11 +24,9 @@ static-binary: target/docker-helper/matchhostfsowner
 		-v "$$(pwd):/home/rust/src:delegated" \
 		-v "$$(pwd)/target/rust-musl-builder:/home/rust/src/target:delegated" \
 		-v "$$(pwd)/target/docker-helper/matchhostfsowner:/sbin/matchhostfsowner:delegated" \
-		-v "$$(pwd)/release-scripts/hooks.d:/etc/matchhostfsowner/hooks.d:delegated" \
 		-e "MHF_HOST_UID=$$(id -u)" \
 		-e "MHF_HOST_GID=$$(id -g)" \
 		-e "MHF_APP_ACCOUNT=rust" \
-		-e "MHF_CHOWN_HOME=0" \
 		--user 0:0 \
 		--entrypoint /sbin/matchhostfsowner \
 		ekidd/rust-musl-builder:$(RUST_MUSL_BUILDER_VERSION) \
