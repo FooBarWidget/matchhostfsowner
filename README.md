@@ -2,7 +2,7 @@
 
 > This documentation is incomplete. It is a work in progress.
 
-`matchhostfsowner` is a program whose goal is to solve the Docker host UID remapping problem.
+`matchhostfsowner` is a program whose goal is to solve the Docker host filesystem owner matching problem.
 
 When you run a Docker container without root privileges, then that container may not have permission to access host directory mounts, because the UID inside the container may not match the UID of the mounted files. If you run the container with the same UID as those of the files, then that may break various programs inside the container because there may not be a user account within the container with that UID.
 
