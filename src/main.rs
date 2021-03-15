@@ -212,42 +212,42 @@ fn drop_setuid_root_bit_on_self_exe_if_necessary() {
 #[fail(display = "Error stat()'ing /proc/1: {}", _0)]
 struct Proc1StatError(#[cause] io::Error);
 
-fn lookup_target_account_uid_gid(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
-    if config.target_uid.is_some() && config.target_gid.is_some() {
-        debug!("Using target UID/GID specified by configuration.");
-        return Ok((config.target_uid.unwrap(), config.target_gid.unwrap()));
+fn lookup_host_account_uid_gid(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
+    if config.host_uid.is_some() && config.host_gid.is_some() {
+        debug!("Using host UID/GID specified by configuration.");
+        return Ok((config.host_uid.unwrap(), config.host_gid.unwrap()));
     }
 
-    if config.target_uid.is_some() {
-        debug!("Using target UID specified by configuration.");
-    } else if config.target_gid.is_some() {
-        debug!("Using target GID specified by configuration.");
+    if config.host_uid.is_some() {
+        debug!("Using host UID specified by configuration.");
+    } else if config.host_gid.is_some() {
+        debug!("Using host GID specified by configuration.");
     }
 
     if unistd::getpid().as_raw() == 1 {
         Ok((
-            config.target_uid.unwrap_or(unistd::getuid()),
-            config.target_gid.unwrap_or(unistd::getgid()),
+            config.host_uid.unwrap_or(unistd::getuid()),
+            config.host_gid.unwrap_or(unistd::getgid()),
         ))
     } else {
-        debug!("Looking up target UID/GID by querying /proc/1.");
-        lookup_target_uid_gid_from_proc(config)
+        debug!("Looking up host UID/GID by querying /proc/1.");
+        lookup_host_uid_gid_from_proc(config)
     }
 }
 
-fn lookup_target_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
+fn lookup_host_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
     let meta = fs::metadata("/proc/1").map_err(|err| Proc1StatError(err))?;
     Ok((
-        config.target_uid.unwrap_or(Uid::from_raw(meta.uid())),
-        config.target_gid.unwrap_or(Gid::from_raw(meta.gid())),
+        config.host_uid.unwrap_or(Uid::from_raw(meta.uid())),
+        config.host_gid.unwrap_or(Gid::from_raw(meta.gid())),
     ))
 }
 
-fn lookup_target_account_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
-    let (uid, gid) = lookup_target_account_uid_gid(&config).unwrap_or_else(|err| {
-        abort!("Error looking up target UID/GID: {}", err);
+fn lookup_host_account_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
+    let (uid, gid) = lookup_host_account_uid_gid(&config).unwrap_or_else(|err| {
+        abort!("Error looking up host UID/GID: {}", err);
     });
-    debug!("Target account UID/GID = {}:{}", uid, gid);
+    debug!("Host account UID/GID = {}:{}", uid, gid);
     (uid, gid)
 }
 
@@ -566,34 +566,34 @@ fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), A
     })
 }
 
-fn ensure_no_account_already_using_target_uid(config: &Config, target_uid: Uid) {
+fn ensure_no_account_already_using_host_uid(config: &Config, host_uid: Uid) {
     debug!(
-        "Checking whether the target UID ({}) is already occupied by an existing account.",
-        target_uid
+        "Checking whether the host UID ({}) is already occupied by an existing account.",
+        host_uid
     );
-    match lookup_account_with_uid(target_uid) {
+    match lookup_account_with_uid(host_uid) {
         Ok(Some(conflicting_account)) => {
             debug!(
-                "Target UID ({}) already occupied by account '{}'. \
+                "Host UID ({}) already occupied by account '{}'. \
                  Will change that account's UID.",
-                target_uid, conflicting_account.name
+                host_uid, conflicting_account.name
             );
-            let new_uid = find_unused_uid(target_uid).unwrap_or_else(|| {
+            let new_uid = find_unused_uid(host_uid).unwrap_or_else(|| {
                 abort!(
                     "Error changing conflicting account '{}': \
                      cannot find an unused UID that's larger than {}",
                     conflicting_account.name,
-                    target_uid
+                    host_uid
                 );
             });
 
             debug!(
                 "Changing conflicting account '{}' UID: {} -> {}",
-                conflicting_account.name, target_uid, new_uid
+                conflicting_account.name, host_uid, new_uid
             );
             modify_account_uid_gid(
                 &config,
-                target_uid,
+                host_uid,
                 new_uid,
                 Gid::from_raw(conflicting_account.gid),
             )
@@ -601,75 +601,75 @@ fn ensure_no_account_already_using_target_uid(config: &Config, target_uid: Uid) 
                 abort!(
                     "Error changing conflicting account '{}' UID from {} to {}: {}",
                     conflicting_account.name,
-                    target_uid,
+                    host_uid,
                     new_uid,
                     err
                 );
             });
         }
         Ok(None) => debug!(
-            "Target UID ({}) not already occupied by existing account.",
-            target_uid
+            "Host UID ({}) not already occupied by existing account.",
+            host_uid
         ),
         Err(err) => {
             abort!(
-                "Error checking whether the target UID ({}) \
+                "Error checking whether the host UID ({}) \
                  is already occupied by an existing account: {}",
-                target_uid,
+                host_uid,
                 err
             );
         }
     };
 }
 
-fn ensure_app_account_has_target_uid_and_gid(
+fn ensure_app_account_has_host_uid_and_gid(
     config: &Config,
     app_account_details: &AccountDetails,
-    target_uid: Uid,
-    target_gid: Gid,
+    host_uid: Uid,
+    host_gid: Gid,
 ) {
     debug!(
-        "Changing account '{}' UID/GID ({}:{}) to match target UID/GID ({}:{}).",
+        "Changing account '{}' UID/GID ({}:{}) to match host UID/GID ({}:{}).",
         config.app_account,
         app_account_details.uid,
         app_account_details.gid,
-        target_uid,
-        target_gid
+        host_uid,
+        host_gid
     );
-    modify_account_uid_gid(config, app_account_details.uid, target_uid, target_gid).unwrap_or_else(
+    modify_account_uid_gid(config, app_account_details.uid, host_uid, host_gid).unwrap_or_else(
         |err| {
             abort!(
                 "Error changing account '{}' UID/GID from {}:{} to {}:{}: {}",
                 config.app_account,
                 app_account_details.uid,
                 app_account_details.gid,
-                target_uid,
-                target_gid,
+                host_uid,
+                host_gid,
                 err
             );
         },
     );
 }
 
-fn ensure_no_group_already_using_target_gid(config: &Config, target_gid: Gid) {
+fn ensure_no_group_already_using_host_gid(config: &Config, host_gid: Gid) {
     debug!(
-        "Checking whether the target GID ({}) is already occupied by an existing group.",
-        target_gid
+        "Checking whether the host GID ({}) is already occupied by an existing group.",
+        host_gid
     );
-    match OsGroup::from_gid(target_gid) {
+    match OsGroup::from_gid(host_gid) {
         Ok(Some(conflicting_group)) => {
             debug!(
-                "Target GID ({}) already occupied by group '{}'. \
+                "Host GID ({}) already occupied by group '{}'. \
                  Will change that group's GID.",
-                target_gid, conflicting_group.name
+                host_gid, conflicting_group.name
             );
-            let new_gid = find_unused_gid(target_gid).unwrap_or_else(|err| {
+            let new_gid = find_unused_gid(host_gid).unwrap_or_else(|err| {
                 abort!(
                     "Error changing conflicting group '{}': \
                      error finding an unused GID that's larger \
                      than {}: {}",
                     conflicting_group.name,
-                    target_gid,
+                    host_gid,
                     err
                 );
             });
@@ -678,78 +678,78 @@ fn ensure_no_group_already_using_target_gid(config: &Config, target_gid: Gid) {
                     "Error changing conflicting group '{}': \
                      cannot find an unused GID that's larger than {}",
                     conflicting_group.name,
-                    target_gid
+                    host_gid
                 );
             });
 
             debug!(
                 "Changing conflicting group '{}' GID: {} -> {}",
-                conflicting_group.name, target_gid, new_gid
+                conflicting_group.name, host_gid, new_gid
             );
-            modify_group_gid(&config, target_gid, new_gid).unwrap_or_else(|err| {
+            modify_group_gid(&config, host_gid, new_gid).unwrap_or_else(|err| {
                 abort!(
                     "Error changing conflicting group '{}' GID from {} to {}: {}",
                     conflicting_group.name,
-                    target_gid,
+                    host_gid,
                     new_gid,
                     err
                 );
             });
         }
         Ok(None) => debug!(
-            "Target GID ({}) not already occupied by existing group.",
-            target_gid
+            "Host GID ({}) not already occupied by existing group.",
+            host_gid
         ),
         Err(err) => {
             abort!(
-                "Error checking whether the target GID ({}) \
+                "Error checking whether the host GID ({}) \
                  is already occupied by an existing group: {}",
-                target_gid,
+                host_gid,
                 err
             );
         }
     };
 }
 
-fn ensure_app_group_has_target_gid(
+fn ensure_app_group_has_host_gid(
     config: &Config,
     app_account_details: &AccountDetails,
-    target_gid: Gid,
+    host_gid: Gid,
 ) {
     debug!(
-        "Changing group '{}' GID ({}) to match the target GID ({}).",
-        app_account_details.group_name, app_account_details.gid, target_gid
+        "Changing group '{}' GID ({}) to match the host GID ({}).",
+        app_account_details.group_name, app_account_details.gid, host_gid
     );
-    modify_group_gid(&config, app_account_details.gid, target_gid).unwrap_or_else(|err| {
+    modify_group_gid(&config, app_account_details.gid, host_gid).unwrap_or_else(|err| {
         abort!(
             "Error changing group '{}' GID from {} to {}: {}",
             app_account_details.group_name,
             app_account_details.gid,
-            target_gid,
+            host_gid,
             err
         );
     });
 }
 
-fn lookup_target_account_details(
-    target_uid: Uid,
-    target_gid: Gid,
+fn lookup_host_account_details(
+    host_uid: Uid,
+    host_gid: Gid,
 ) -> Result<AccountDetails, AccountDetailsLookupError> {
-    let entry = match lookup_account_with_uid(target_uid) {
+    let entry = match lookup_account_with_uid(host_uid) {
         Ok(Some(x)) => x,
         Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
         Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
     };
 
-    let grp_entry = match OsGroup::from_gid(target_gid) {
+    let grp_entry = match OsGroup::from_gid(host_gid) {
         Ok(Some(x)) => x,
-        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(target_gid)),
+        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(host_gid)),
         Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
     };
 
     Ok(AccountDetails {
-        uid: target_uid,
-        gid: target_gid,
+        uid: host_uid,
+        gid: host_gid,
         name: entry.name,
         home: entry.dir,
         shell: entry.shell,
@@ -757,42 +757,42 @@ fn lookup_target_account_details(
     })
 }
 
-fn lookup_target_account_details_or_abort(
+fn lookup_host_account_details_or_abort(
     config: &Config,
-    target_uid: Uid,
-    target_gid: Gid,
+    host_uid: Uid,
+    host_gid: Gid,
     using_app_account: bool,
 ) -> AccountDetails {
-    let details = lookup_target_account_details(target_uid, target_gid).unwrap_or_else(|err| {
+    let details = lookup_host_account_details(host_uid, host_gid).unwrap_or_else(|err| {
         if using_app_account {
             abort!(
                 "Error looking up app account ('{}') details (UID/GID {}:{}): {}",
                 config.app_account,
-                target_uid,
-                target_gid,
+                host_uid,
+                host_gid,
                 err
             );
         } else {
             abort!(
                 "Error looking up OS account details for UID/GID {}:{}: {}",
-                target_uid,
-                target_gid,
+                host_uid,
+                host_gid,
                 err
             );
         }
     });
     debug!(
-        "Target account is '{}' (UID/GID = {}:{}, group = {}, home = {}).",
-        details.name, target_uid, target_gid, details.group_name, details.home
+        "Host account is '{}' (UID/GID = {}:{}, group = {}, home = {}).",
+        details.name, host_uid, host_gid, details.group_name, details.home
     );
     details
 }
 
-fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: &AccountDetails) {
+fn maybe_chown_host_account_home_dir(config: &Config, host_account_details: &AccountDetails) {
     if !config.chown_home {
         debug!(
             "Skipping changing ownership of '{}' home directory.",
-            target_account_details.name
+            host_account_details.name
         );
         return;
     }
@@ -805,16 +805,16 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
     // boundaries.
     let command_string = format!(
         "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
-        shell_escape::escape(Cow::from(&target_account_details.home)),
-        target_account_details.uid,
-        target_account_details.gid
+        shell_escape::escape(Cow::from(&host_account_details.home)),
+        host_account_details.uid,
+        host_account_details.gid
     );
     debug!("Running command with shell: {}", command_string);
 
     if config.dry_run {
         info!(
             "Dry-run mode on, so not actually running 'chown' on {}.",
-            target_account_details.home
+            host_account_details.home
         );
         return;
     }
@@ -828,7 +828,7 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
             if !status.success() {
                 abort!(
                     "Error changing '{}' account: command '{}' failed with exit code {}",
-                    target_account_details.name,
+                    host_account_details.name,
                     command_string,
                     status
                         .code()
@@ -880,7 +880,7 @@ fn list_executable_files_sorted(dir: &PathBuf) -> Result<Vec<PathBuf>, ListDirEr
     Ok(result)
 }
 
-fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
+fn run_hooks(config: &Config, host_account_details: &AccountDetails) {
     let hooks_dir = PathBuf::from(&config.hooks_dir);
     let hooks = match list_executable_files_sorted(&hooks_dir) {
         Ok(x) => x,
@@ -908,14 +908,14 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
             continue;
         }
 
-        let target_uid_string = target_account_details.uid.to_string();
-        let target_gid_string = target_account_details.uid.to_string();
+        let host_uid_string = host_account_details.uid.to_string();
+        let host_gid_string = host_account_details.uid.to_string();
         let result = process::Command::new(&hook)
-            .env("MHF_TARGET_UID", &target_uid_string)
-            .env("MHF_TARGET_GID", &target_gid_string)
-            .env("MHF_TARGET_USER", &target_account_details.name)
-            .env("MHF_TARGET_GROUP", &target_account_details.group_name)
-            .env("MHF_TARGET_HOME", &target_account_details.home)
+            .env("MHF_HOST_UID", &host_uid_string)
+            .env("MHF_HOST_GID", &host_gid_string)
+            .env("MHF_HOST_USER", &host_account_details.name)
+            .env("MHF_HOST_GROUP", &host_account_details.group_name)
+            .env("MHF_HOST_HOME", &host_account_details.home)
             .status();
         match result {
             Ok(status) => {
@@ -940,24 +940,24 @@ fn run_hooks(config: &Config, target_account_details: &AccountDetails) {
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-fn change_supplementary_groups(target_account_details: &AccountDetails) {
-    let user_c = CString::new(target_account_details.name.as_bytes()).unwrap_or_else(|err| {
+fn change_supplementary_groups(host_account_details: &AccountDetails) {
+    let user_c = CString::new(host_account_details.name.as_bytes()).unwrap_or_else(|err| {
         abort!(
             "Error changing process supplementary groups: error allocating a C string: {}",
             err
         );
     });
-    unistd::initgroups(&user_c, target_account_details.gid).unwrap_or_else(|err| {
+    unistd::initgroups(&user_c, host_account_details.gid).unwrap_or_else(|err| {
         abort!("Error changing process supplementary groups: {}", err);
     });
 }
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-fn change_supplementary_groups(_target_account_details: &AccountDetails) {
+fn change_supplementary_groups(_host_account_details: &AccountDetails) {
     // Not supported by nix crate
 }
 
-fn change_user(target_account_details: &AccountDetails) {
+fn change_user(host_account_details: &AccountDetails) {
     if !unistd::geteuid().is_root() {
         info!("No root privileges. Not changing process UID/GID.");
         return;
@@ -965,41 +965,41 @@ fn change_user(target_account_details: &AccountDetails) {
 
     debug!(
         "Setting process supplementary groups to those belonging to group '{}' (GID {}).",
-        target_account_details.group_name, target_account_details.gid
+        host_account_details.group_name, host_account_details.gid
     );
-    change_supplementary_groups(target_account_details);
+    change_supplementary_groups(host_account_details);
 
     debug!(
         "Setting process group to '{}' (GID {}).",
-        target_account_details.group_name, target_account_details.gid
+        host_account_details.group_name, host_account_details.gid
     );
-    unistd::setgid(target_account_details.gid).unwrap_or_else(|err| {
+    unistd::setgid(host_account_details.gid).unwrap_or_else(|err| {
         abort!(
             "Error changing process GID to {}: {}",
-            target_account_details.gid,
+            host_account_details.gid,
             err
         );
     });
 
     debug!(
         "Setting process user to '{}' (UID {}).",
-        target_account_details.name, target_account_details.uid
+        host_account_details.name, host_account_details.uid
     );
-    unistd::setuid(target_account_details.uid).unwrap_or_else(|err| {
+    unistd::setuid(host_account_details.uid).unwrap_or_else(|err| {
         abort!(
             "Error changing process UID to {}: {}",
-            target_account_details.uid,
+            host_account_details.uid,
             err
         );
     });
 
-    env::set_var("USER", &target_account_details.name);
-    env::set_var("LOGNAME", &target_account_details.name);
-    env::set_var("SHELL", &target_account_details.shell);
-    env::set_var("HOME", &target_account_details.home);
+    env::set_var("USER", &host_account_details.name);
+    env::set_var("LOGNAME", &host_account_details.name);
+    env::set_var("SHELL", &host_account_details.shell);
+    env::set_var("HOME", &host_account_details.home);
 }
 
-fn maybe_execute_next_command(target_account_details: &AccountDetails) {
+fn maybe_execute_next_command(host_account_details: &AccountDetails) {
     let args: Vec<OsString> = env::args_os().collect();
 
     if args.len() > 1 {
@@ -1029,19 +1029,19 @@ fn maybe_execute_next_command(target_account_details: &AccountDetails) {
     } else if unistd::getpid().as_raw() == 1 {
         debug!(
             "We are PID 1, and no CLI arguments provided, so executing shell: {}",
-            target_account_details.shell
+            host_account_details.shell
         );
-        let shell = CString::new(target_account_details.shell.clone()).unwrap_or_else(|err| {
+        let shell = CString::new(host_account_details.shell.clone()).unwrap_or_else(|err| {
             abort!(
                 "Error executing command '{}': error allocating C string: {}",
-                target_account_details.shell,
+                host_account_details.shell,
                 err
             );
         });
         unistd::execvp(&shell.clone(), &vec![shell]).unwrap_or_else(|err| {
             abort!(
                 "Error executing command '{}': {}",
-                target_account_details.shell,
+                host_account_details.shell,
                 err
             );
         });
@@ -1059,20 +1059,20 @@ fn main() {
     drop_setuid_root_bit_on_self_exe_if_necessary();
 
     let mut using_app_account = false;
-    let (target_uid, target_gid) = lookup_target_account_uid_gid_or_abort(&config);
+    let (host_uid, host_gid) = lookup_host_account_uid_gid_or_abort(&config);
     let app_account_details = lookup_app_account_details_or_abort(&config);
     sanity_check_app_account_details(&config, &app_account_details);
     embrace_setuid_bit_privileges_if_provided();
 
-    if target_uid.is_root() {
+    if host_uid.is_root() {
         debug!(
-            "Target UID ({}) is root. Not modifying '{}' account.",
-            target_uid, config.app_account
+            "Host UID ({}) is root. Not modifying '{}' account.",
+            host_uid, config.app_account
         );
-    } else if target_uid == app_account_details.uid {
+    } else if host_uid == app_account_details.uid {
         debug!(
-            "Target UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
-            target_uid, config.app_account, app_account_details.uid, config.app_account,
+            "Host UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
+            host_uid, config.app_account, app_account_details.uid, config.app_account,
         );
     } else {
         debug!(
@@ -1080,47 +1080,47 @@ fn main() {
             config.app_account,
             app_account_details.uid,
             app_account_details.gid,
-            target_uid,
-            target_gid
+            host_uid,
+            host_gid
         );
-        ensure_no_account_already_using_target_uid(&config, target_uid);
-        ensure_app_account_has_target_uid_and_gid(
+        ensure_no_account_already_using_host_uid(&config, host_uid);
+        ensure_app_account_has_host_uid_and_gid(
             &config,
             &app_account_details,
-            target_uid,
-            target_gid,
+            host_uid,
+            host_gid,
         );
         using_app_account = true;
     }
 
-    if target_gid.as_raw() == 0 {
+    if host_gid.as_raw() == 0 {
         debug!(
-            "Target GID ({}) is the root group. Not modifying '{}' group.",
-            target_gid, app_account_details.group_name,
+            "Host GID ({}) is the root group. Not modifying '{}' group.",
+            host_gid, app_account_details.group_name,
         );
-    } else if target_gid == app_account_details.gid {
+    } else if host_gid == app_account_details.gid {
         debug!(
-            "Target GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
-            target_gid, config.app_account, app_account_details.gid, app_account_details.group_name
+            "Host GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
+            host_gid, config.app_account, app_account_details.gid, app_account_details.group_name
         );
     } else {
         debug!(
             "Intending to change '{}' group's GID from {} to {}.",
-            app_account_details.group_name, app_account_details.gid, target_gid
+            app_account_details.group_name, app_account_details.gid, host_gid
         );
-        ensure_no_group_already_using_target_gid(&config, target_gid);
-        ensure_app_group_has_target_gid(&config, &app_account_details, target_gid);
+        ensure_no_group_already_using_host_gid(&config, host_gid);
+        ensure_app_group_has_host_gid(&config, &app_account_details, host_gid);
     }
 
     // The information in here is now stale, so make sure
     // we can't use it anymore.
     std::mem::drop(app_account_details);
 
-    let target_account_details =
-        lookup_target_account_details_or_abort(&config, target_uid, target_gid, using_app_account);
-    maybe_chown_target_account_home_dir(&config, &target_account_details);
-    run_hooks(&config, &target_account_details);
-    change_user(&target_account_details);
+    let host_account_details =
+        lookup_host_account_details_or_abort(&config, host_uid, host_gid, using_app_account);
+    maybe_chown_host_account_home_dir(&config, &host_account_details);
+    run_hooks(&config, &host_account_details);
+    change_user(&host_account_details);
 
-    maybe_execute_next_command(&target_account_details);
+    maybe_execute_next_command(&host_account_details);
 }

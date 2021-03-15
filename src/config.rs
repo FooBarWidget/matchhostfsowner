@@ -14,8 +14,8 @@ use yaml_rust::{Yaml, YamlLoader};
 #[derive(Debug)]
 pub struct Config {
     pub log_level: log::Level,
-    pub target_uid: Option<Uid>,
-    pub target_gid: Option<Gid>,
+    pub host_uid: Option<Uid>,
+    pub host_gid: Option<Gid>,
     pub app_account: String,
     pub mock_app_account_uid: Option<Uid>,
     pub mock_app_account_gid: Option<Gid>,
@@ -39,19 +39,19 @@ pub fn load_config() -> Config {
             &parse_log_level,
             &|doc| doc.as_str().and_then(parse_log_level),
         ),
-        target_uid: load_config_key_or_abort(
-            "MHF_TARGET_UID",
+        host_uid: load_config_key_or_abort(
+            "MHF_HOST_UID",
             &file_config,
-            "target_uid",
+            "host_uid",
             false,
             None,
             &parse_uid_str,
             &parse_uid_yaml,
         ),
-        target_gid: load_config_key_or_abort(
-            "MHF_TARGET_GID",
+        host_gid: load_config_key_or_abort(
+            "MHF_HOST_GID",
             &file_config,
-            "target_gid",
+            "host_gid",
             false,
             None,
             &parse_gid_str,
