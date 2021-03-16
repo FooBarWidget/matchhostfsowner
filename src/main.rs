@@ -1,6 +1,5 @@
 mod abort;
 mod config;
-mod os_group;
 mod simple_logger;
 
 use config::{load_config, Config};
@@ -8,13 +7,13 @@ use failure::Fail;
 use libc;
 use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
-use os_group::OsGroup;
-use pwd::{self, Passwd, PwdError};
 use shell_escape;
-use std::ffi::{CString, OsString};
-use std::os::unix::{ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt, process::CommandExt};
+use std::ffi::{CString, NulError, OsString};
+use std::os::unix::{
+    ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt, process::CommandExt,
+};
 use std::result::Result;
-use std::{borrow::Cow, env, fs, io, path::PathBuf, process};
+use std::{borrow::Cow, env, fs, io, path::Path, path::PathBuf, process};
 
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
@@ -256,21 +255,21 @@ struct AccountDetails {
     uid: Uid,
     gid: Gid,
     name: String,
-    home: String,
-    shell: String,
+    home: PathBuf,
+    shell: PathBuf,
     group_name: String,
 }
 
 #[derive(Debug, Fail)]
 enum AccountDetailsLookupError {
     #[fail(display = "Error looking up user database entry: {}", _0)]
-    UserLookupError(#[cause] PwdError),
+    UserLookupError(#[cause] nix::Error),
 
     #[fail(display = "User not found in user database")]
     UserNotFound,
 
     #[fail(display = "Error looking up group database entry: {}", _0)]
-    GroupLookupError(#[cause] os_group::Error),
+    GroupLookupError(#[cause] nix::Error),
 
     #[fail(
         display = "User's primary group (GID {}) not found in group database",
@@ -282,25 +281,21 @@ enum AccountDetailsLookupError {
 fn lookup_app_account_details(
     config: &Config,
 ) -> Result<AccountDetails, AccountDetailsLookupError> {
-    let entry = match Passwd::from_name(config.app_account.as_str()) {
+    let entry = match unistd::User::from_name(config.app_account.as_str()) {
         Ok(Some(x)) => x,
         Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
         Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
     };
 
-    let gid = config
-        .mock_app_account_gid
-        .unwrap_or(Gid::from_raw(entry.gid));
-    let grp_entry = match OsGroup::from_gid(gid) {
+    let gid = config.mock_app_account_gid.unwrap_or(entry.gid);
+    let grp_entry = match unistd::Group::from_gid(gid) {
         Ok(Some(x)) => x,
         Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
         Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
     };
 
     Ok(AccountDetails {
-        uid: config
-            .mock_app_account_uid
-            .unwrap_or(Uid::from_raw(entry.uid)),
+        uid: config.mock_app_account_uid.unwrap_or(entry.uid),
         gid: gid,
         name: entry.name,
         home: entry.dir,
@@ -378,34 +373,29 @@ fn embrace_setuid_bit_privileges_if_provided() {
     });
 }
 
-fn lookup_account_with_uid(uid: Uid) -> Result<Option<Passwd>, pwd::PwdError> {
-    match Passwd::from_uid(uid.as_raw()) {
-        Some(i) => Ok(Some(i)),
-        None => Ok(None),
-    }
-}
-
-fn find_unused_uid(min_uid: Uid) -> Option<Uid> {
+fn find_unused_uid(min_uid: Uid) -> Result<Option<Uid>, nix::Error> {
     const MAX_POSSIBLE_UID: u64 = 0xFFFF;
     let min_uid = min_uid.as_raw();
     let max_uid = (min_uid as u64 + MAX_POSSIBLE_UID).min(MAX_POSSIBLE_UID) as u32;
 
     for uid in min_uid + 1..max_uid {
-        if Passwd::from_uid(uid).is_none() {
-            return Some(Uid::from_raw(uid));
+        match unistd::User::from_uid(Uid::from_raw(uid)) {
+            Ok(Some(_)) => continue,
+            Ok(None) => return Ok(Some(Uid::from_raw(uid))),
+            Err(err) => return Err(err),
         }
     }
 
-    None
+    Ok(None)
 }
 
-fn find_unused_gid(min_gid: Gid) -> Result<Option<Gid>, os_group::Error> {
+fn find_unused_gid(min_gid: Gid) -> Result<Option<Gid>, nix::Error> {
     const MAX_POSSIBLE_GID: u64 = 0xFFFF;
     let min_gid = min_gid.as_raw();
     let max_gid = (min_gid as u64 + MAX_POSSIBLE_GID).min(MAX_POSSIBLE_GID) as u32;
 
     for gid in min_gid + 1..max_gid {
-        match OsGroup::from_gid(Gid::from_raw(gid)) {
+        match unistd::Group::from_gid(Gid::from_raw(gid)) {
             Ok(Some(_)) => continue,
             Ok(None) => return Ok(Some(Gid::from_raw(gid))),
             Err(err) => return Err(err),
@@ -571,41 +561,48 @@ fn ensure_no_account_already_using_host_uid(config: &Config, host_uid: Uid) {
         "Checking whether the host UID ({}) is already occupied by an existing account.",
         host_uid
     );
-    match lookup_account_with_uid(host_uid) {
+    match unistd::User::from_uid(host_uid) {
         Ok(Some(conflicting_account)) => {
             debug!(
                 "Host UID ({}) already occupied by account '{}'. \
                  Will change that account's UID.",
                 host_uid, conflicting_account.name
             );
-            let new_uid = find_unused_uid(host_uid).unwrap_or_else(|| {
-                abort!(
-                    "Error changing conflicting account '{}': \
-                     cannot find an unused UID that's larger than {}",
-                    conflicting_account.name,
-                    host_uid
-                );
-            });
+            let new_uid = match find_unused_uid(host_uid) {
+                Ok(Some(uid)) => uid,
+                Ok(None) => {
+                    abort!(
+                        "Error changing conflicting account '{}': \
+                         cannot find an unused UID that's larger than {}",
+                        conflicting_account.name,
+                        host_uid
+                    )
+                }
+                Err(err) => {
+                    abort!(
+                        "Error changing conflicting account '{}': \
+                         an error occurred while trying to find an unused UID that's larger than {}: {}",
+                        conflicting_account.name,
+                        host_uid,
+                        err
+                    )
+                }
+            };
 
             debug!(
                 "Changing conflicting account '{}' UID: {} -> {}",
                 conflicting_account.name, host_uid, new_uid
             );
-            modify_account_uid_gid(
-                &config,
-                host_uid,
-                new_uid,
-                Gid::from_raw(conflicting_account.gid),
-            )
-            .unwrap_or_else(|err| {
-                abort!(
-                    "Error changing conflicting account '{}' UID from {} to {}: {}",
-                    conflicting_account.name,
-                    host_uid,
-                    new_uid,
-                    err
-                );
-            });
+            modify_account_uid_gid(&config, host_uid, new_uid, conflicting_account.gid)
+                .unwrap_or_else(|err| {
+                    abort!(
+                        "Error changing conflicting account '{}' UID from {} to {}: {}",
+                        conflicting_account.name,
+                        host_uid,
+                        new_uid,
+                        err
+                    );
+                });
         }
         Ok(None) => debug!(
             "Host UID ({}) not already occupied by existing account.",
@@ -652,7 +649,7 @@ fn ensure_no_group_already_using_host_gid(config: &Config, host_gid: Gid) {
         "Checking whether the host GID ({}) is already occupied by an existing group.",
         host_gid
     );
-    match OsGroup::from_gid(host_gid) {
+    match unistd::Group::from_gid(host_gid) {
         Ok(Some(conflicting_group)) => {
             debug!(
                 "Host GID ({}) already occupied by group '{}'. \
@@ -727,17 +724,14 @@ fn ensure_app_group_has_host_gid(
     });
 }
 
-fn lookup_account_details(
-    uid: Uid,
-    gid: Gid,
-) -> Result<AccountDetails, AccountDetailsLookupError> {
-    let entry = match lookup_account_with_uid(uid) {
+fn lookup_account_details(uid: Uid, gid: Gid) -> Result<AccountDetails, AccountDetailsLookupError> {
+    let entry = match unistd::User::from_uid(uid) {
         Ok(Some(x)) => x,
         Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
         Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
     };
 
-    let grp_entry = match OsGroup::from_gid(gid) {
+    let grp_entry = match unistd::Group::from_gid(gid) {
         Ok(Some(x)) => x,
         Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
         Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
@@ -779,7 +773,11 @@ fn lookup_target_account_details_or_abort(
     });
     debug!(
         "Target account is '{}' (UID/GID = {}:{}, group = {}, home = {}).",
-        details.name, host_uid, host_gid, details.group_name, details.home
+        details.name,
+        host_uid,
+        host_gid,
+        details.group_name,
+        details.home.display()
     );
     details
 }
@@ -793,6 +791,17 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
         return;
     }
 
+    let home = match target_account_details.home.to_str() {
+        Some(x) => x,
+        None => {
+            abort!(
+                "Error changing '{}' account: home directory path '{}' is not valid unicode",
+                target_account_details.name,
+                target_account_details.home.display()
+            )
+        }
+    };
+
     // The container may have mounts under the home directory.
     // For example, when using ekidd/rust-musl-builder the user is supposed
     // to mount the a host directory into /home/rust/src.
@@ -801,7 +810,7 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
     // boundaries.
     let command_string = format!(
         "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
-        shell_escape::escape(Cow::from(&target_account_details.home)),
+        shell_escape::escape(Cow::from(home)),
         target_account_details.uid,
         target_account_details.gid
     );
@@ -810,7 +819,7 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
     if config.dry_run {
         info!(
             "Dry-run mode on, so not actually running 'chown' on {}.",
-            target_account_details.home
+            target_account_details.home.display()
         );
         return;
     }
@@ -995,6 +1004,11 @@ fn change_user(host_account_details: &AccountDetails) {
     env::set_var("HOME", &host_account_details.home);
 }
 
+fn path_to_cstring(path: &Path) -> Result<CString, NulError> {
+    let path_data = path.as_os_str().as_bytes();
+    return CString::new(Vec::from(path_data));
+}
+
 fn maybe_execute_next_command(host_account_details: &AccountDetails) {
     let args: Vec<OsString> = env::args_os().collect();
 
@@ -1025,19 +1039,21 @@ fn maybe_execute_next_command(host_account_details: &AccountDetails) {
     } else if unistd::getpid().as_raw() == 1 {
         debug!(
             "We are PID 1, and no CLI arguments provided, so executing shell: {}",
-            host_account_details.shell
+            host_account_details.shell.display()
         );
-        let shell = CString::new(host_account_details.shell.clone()).unwrap_or_else(|err| {
-            abort!(
-                "Error executing command '{}': error allocating C string: {}",
-                host_account_details.shell,
-                err
-            );
-        });
+        let shell = match path_to_cstring(host_account_details.shell.as_path()) {
+            Ok(x) => x,
+            Err(_) => {
+                abort!(
+                    "Error executing command '{}': shell path name contains a forbidden null byte",
+                    host_account_details.shell.display(),
+                )
+            }
+        };
         unistd::execvp(&shell.clone(), &vec![shell]).unwrap_or_else(|err| {
             abort!(
                 "Error executing command '{}': {}",
-                host_account_details.shell,
+                host_account_details.shell.display(),
                 err
             );
         });
