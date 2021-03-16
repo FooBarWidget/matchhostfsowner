@@ -3,11 +3,11 @@ mod config;
 mod simple_logger;
 
 use config::{load_config, Config};
-use failure::Fail;
 use libc;
-use log::{debug, error, info, trace, warn, Level};
-use nix::unistd::{self, Gid, Uid};
 use shell_escape;
+use thiserror::Error;
+use nix::unistd::{self, Gid, Uid};
+use log::{debug, error, info, trace, warn, Level};
 use std::ffi::{CString, NulError, OsString};
 use std::os::unix::{
     ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt, process::CommandExt,
@@ -207,9 +207,9 @@ fn drop_setuid_root_bit_on_self_exe_if_necessary() {
     }
 }
 
-#[derive(Debug, Fail)]
-#[fail(display = "Error stat()'ing /proc/1: {}", _0)]
-struct Proc1StatError(#[cause] io::Error);
+#[derive(Error, Debug)]
+#[error("Error stat()'ing /proc/1: {0}")]
+struct Proc1StatError(#[from] io::Error);
 
 fn lookup_host_account_uid_gid(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
     if config.host_uid.is_some() && config.host_gid.is_some() {
@@ -260,21 +260,18 @@ struct AccountDetails {
     group_name: String,
 }
 
-#[derive(Debug, Fail)]
+#[derive(Error, Debug)]
 enum AccountDetailsLookupError {
-    #[fail(display = "Error looking up user database entry: {}", _0)]
-    UserLookupError(#[cause] nix::Error),
+    #[error("Error looking up user database entry: {0}")]
+    UserLookupError(#[source] nix::Error),
 
-    #[fail(display = "User not found in user database")]
+    #[error("User not found in user database")]
     UserNotFound,
 
-    #[fail(display = "Error looking up group database entry: {}", _0)]
-    GroupLookupError(#[cause] nix::Error),
+    #[error("Error looking up group database entry: {0}")]
+    GroupLookupError(#[source] nix::Error),
 
-    #[fail(
-        display = "User's primary group (GID {}) not found in group database",
-        _0
-    )]
+    #[error("User's primary group (GID {0}) not found in group database")]
     PrimaryGroupNotFound(Gid),
 }
 
@@ -405,19 +402,19 @@ fn find_unused_gid(min_gid: Gid) -> Result<Option<Gid>, nix::Error> {
     Ok(None)
 }
 
-#[derive(Debug, Fail)]
+#[derive(Error, Debug)]
 enum AccountModifyError {
-    #[fail(display = "Error reading /etc/passwd: {}", _0)]
-    PasswdReadError(#[cause] io::Error),
+    #[error("Error reading /etc/passwd: {0}")]
+    PasswdReadError(#[source] io::Error),
 
-    #[fail(display = "Error writing /etc/passwd: {}", _0)]
-    PasswdWriteError(#[cause] io::Error),
+    #[error("Error writing /etc/passwd: {0}")]
+    PasswdWriteError(#[source] io::Error),
 
-    #[fail(display = "Error reading /etc/group: {}", _0)]
-    GroupReadError(#[cause] io::Error),
+    #[error("Error reading /etc/group: {0}")]
+    GroupReadError(#[source] io::Error),
 
-    #[fail(display = "Error writing /etc/group: {}", _0)]
-    GroupWriteError(#[cause] io::Error),
+    #[error("Error writing /etc/group: {0}")]
+    GroupWriteError(#[source] io::Error),
 }
 
 type BinaryString = Vec<u8>;
@@ -842,16 +839,16 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
     };
 }
 
-#[derive(Debug, Fail)]
-enum ListDirError {
-    #[fail(display = "Error reading directory {}: {}", _0, _1)]
-    ReadDirError(String, #[cause] io::Error),
+#[derive(Error, Debug)]
+pub enum ListDirError {
+    #[error("Error reading directory {0}: {1}")]
+    ReadDirError(String, #[source] io::Error),
 
-    #[fail(display = "Error reading directory entry from {}: {}", _0, _1)]
-    ReadDirEntryError(String, #[cause] io::Error),
+    #[error("Error reading directory entry from {0}: {1}")]
+    ReadDirEntryError(String, #[source] io::Error),
 
-    #[fail(display = "Error querying file metadata for {}: {}", _0, _1)]
-    QueryMetaError(String, #[cause] io::Error),
+    #[error("Error querying file metadata for {0}: {1}")]
+    QueryMetaError(String, #[source] io::Error),
 }
 
 fn list_executable_files_sorted(dir: &PathBuf) -> Result<Vec<PathBuf>, ListDirError> {
