@@ -230,12 +230,12 @@ fn lookup_host_account_uid_gid(config: &Config) -> Result<(Uid, Gid), Proc1StatE
             config.host_gid.unwrap_or(unistd::getgid()),
         ))
     } else {
-        debug!("Looking up host UID/GID by querying /proc/1.");
-        lookup_host_uid_gid_from_proc(config)
+        debug!("Looking up host account UID/GID by querying /proc/1.");
+        lookup_host_account_uid_gid_from_proc(config)
     }
 }
 
-fn lookup_host_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
+fn lookup_host_account_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), Proc1StatError> {
     let meta = fs::metadata("/proc/1").map_err(|err| Proc1StatError(err))?;
     Ok((
         config.host_uid.unwrap_or(Uid::from_raw(meta.uid())),
@@ -245,7 +245,7 @@ fn lookup_host_uid_gid_from_proc(config: &Config) -> Result<(Uid, Gid), Proc1Sta
 
 fn lookup_host_account_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
     let (uid, gid) = lookup_host_account_uid_gid(&config).unwrap_or_else(|err| {
-        abort!("Error looking up host UID/GID: {}", err);
+        abort!("Error looking up host account UID/GID: {}", err);
     });
     debug!("Host account UID/GID = {}:{}", uid, gid);
     (uid, gid)
@@ -727,25 +727,25 @@ fn ensure_app_group_has_host_gid(
     });
 }
 
-fn lookup_host_account_details(
-    host_uid: Uid,
-    host_gid: Gid,
+fn lookup_account_details(
+    uid: Uid,
+    gid: Gid,
 ) -> Result<AccountDetails, AccountDetailsLookupError> {
-    let entry = match lookup_account_with_uid(host_uid) {
+    let entry = match lookup_account_with_uid(uid) {
         Ok(Some(x)) => x,
         Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
         Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
     };
 
-    let grp_entry = match OsGroup::from_gid(host_gid) {
+    let grp_entry = match OsGroup::from_gid(gid) {
         Ok(Some(x)) => x,
-        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(host_gid)),
+        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
         Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
     };
 
     Ok(AccountDetails {
-        uid: host_uid,
-        gid: host_gid,
+        uid: uid,
+        gid: gid,
         name: entry.name,
         home: entry.dir,
         shell: entry.shell,
@@ -753,13 +753,13 @@ fn lookup_host_account_details(
     })
 }
 
-fn lookup_host_account_details_or_abort(
+fn lookup_target_account_details_or_abort(
     config: &Config,
     host_uid: Uid,
     host_gid: Gid,
     using_app_account: bool,
 ) -> AccountDetails {
-    let details = lookup_host_account_details(host_uid, host_gid).unwrap_or_else(|err| {
+    let details = lookup_account_details(host_uid, host_gid).unwrap_or_else(|err| {
         if using_app_account {
             abort!(
                 "Error looking up app account ('{}') details (UID/GID {}:{}): {}",
@@ -778,17 +778,17 @@ fn lookup_host_account_details_or_abort(
         }
     });
     debug!(
-        "Host account is '{}' (UID/GID = {}:{}, group = {}, home = {}).",
+        "Target account is '{}' (UID/GID = {}:{}, group = {}, home = {}).",
         details.name, host_uid, host_gid, details.group_name, details.home
     );
     details
 }
 
-fn maybe_chown_host_account_home_dir(config: &Config, host_account_details: &AccountDetails) {
+fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: &AccountDetails) {
     if !config.chown_home {
         debug!(
             "Skipping changing ownership of '{}' home directory.",
-            host_account_details.name
+            target_account_details.name
         );
         return;
     }
@@ -801,16 +801,16 @@ fn maybe_chown_host_account_home_dir(config: &Config, host_account_details: &Acc
     // boundaries.
     let command_string = format!(
         "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
-        shell_escape::escape(Cow::from(&host_account_details.home)),
-        host_account_details.uid,
-        host_account_details.gid
+        shell_escape::escape(Cow::from(&target_account_details.home)),
+        target_account_details.uid,
+        target_account_details.gid
     );
     debug!("Running command with shell: {}", command_string);
 
     if config.dry_run {
         info!(
             "Dry-run mode on, so not actually running 'chown' on {}.",
-            host_account_details.home
+            target_account_details.home
         );
         return;
     }
@@ -824,7 +824,7 @@ fn maybe_chown_host_account_home_dir(config: &Config, host_account_details: &Acc
             if !status.success() {
                 abort!(
                     "Error changing '{}' account: command '{}' failed with exit code {}",
-                    host_account_details.name,
+                    target_account_details.name,
                     command_string,
                     status
                         .code()
@@ -1062,12 +1062,12 @@ fn main() {
 
     if host_uid.is_root() {
         debug!(
-            "Host UID ({}) is root. Not modifying '{}' account.",
+            "Host account UID ({}) is root. Not modifying '{}' account.",
             host_uid, config.app_account
         );
     } else if host_uid == app_account_details.uid {
         debug!(
-            "Host UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
+            "Host account UID ({}) equals '{}' account's UID ({}). Not modifying '{}' account.",
             host_uid, config.app_account, app_account_details.uid, config.app_account,
         );
     } else {
@@ -1086,12 +1086,12 @@ fn main() {
 
     if host_gid.as_raw() == 0 {
         debug!(
-            "Host GID ({}) is the root group. Not modifying '{}' group.",
+            "Host account GID ({}) is the root group. Not modifying '{}' group.",
             host_gid, app_account_details.group_name,
         );
     } else if host_gid == app_account_details.gid {
         debug!(
-            "Host GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
+            "Host account GID ({}) equals '{}' account's GID ({}). Not modifying '{}' group.",
             host_gid, config.app_account, app_account_details.gid, app_account_details.group_name
         );
     } else {
@@ -1107,11 +1107,11 @@ fn main() {
     // we can't use it anymore.
     std::mem::drop(app_account_details);
 
-    let host_account_details =
-        lookup_host_account_details_or_abort(&config, host_uid, host_gid, using_app_account);
-    maybe_chown_host_account_home_dir(&config, &host_account_details);
-    run_hooks(&config, &host_account_details);
-    change_user(&host_account_details);
+    let target_account_details =
+        lookup_target_account_details_or_abort(&config, host_uid, host_gid, using_app_account);
+    maybe_chown_target_account_home_dir(&config, &target_account_details);
+    run_hooks(&config, &target_account_details);
+    change_user(&target_account_details);
 
-    maybe_execute_next_command(&host_account_details);
+    maybe_execute_next_command(&target_account_details);
 }
