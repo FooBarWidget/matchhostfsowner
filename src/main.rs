@@ -1043,12 +1043,10 @@ fn maybe_execute_next_command(host_account_details: &AccountDetails) {
         );
         let shell = match path_to_cstring(host_account_details.shell.as_path()) {
             Ok(x) => x,
-            Err(_) => {
-                abort!(
-                    "Error executing command '{}': shell path name contains a forbidden null byte",
-                    host_account_details.shell.display(),
-                )
-            }
+            Err(NulError { .. }) => abort!(
+                "Error executing command '{}': shell path name contains a forbidden null byte",
+                host_account_details.shell.display(),
+            ),
         };
         unistd::execvp(&shell.clone(), &vec![shell]).unwrap_or_else(|err| {
             abort!(
