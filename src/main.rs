@@ -570,23 +570,21 @@ fn ensure_no_account_already_using_host_uid(config: &Config, host_uid: Uid) {
             );
             let new_uid = match find_unused_uid(host_uid) {
                 Ok(Some(uid)) => uid,
-                Ok(None) => {
+                Ok(None) =>
                     abort!(
                         "Error changing conflicting account '{}': \
-                         cannot find an unused UID that's larger than {}",
+                            cannot find an unused UID that's larger than {}",
                         conflicting_account.name,
                         host_uid
-                    )
-                }
-                Err(err) => {
+                    ),
+                Err(err) =>
                     abort!(
                         "Error changing conflicting account '{}': \
                          an error occurred while trying to find an unused UID that's larger than {}: {}",
                         conflicting_account.name,
                         host_uid,
                         err
-                    )
-                }
+                    ),
             };
 
             debug!(
@@ -608,14 +606,12 @@ fn ensure_no_account_already_using_host_uid(config: &Config, host_uid: Uid) {
             "Host UID ({}) not already occupied by existing account.",
             host_uid
         ),
-        Err(err) => {
-            abort!(
-                "Error checking whether the host UID ({}) \
+        Err(err) => abort!(
+            "Error checking whether the host UID ({}) \
                  is already occupied by an existing account: {}",
-                host_uid,
-                err
-            );
-        }
+            host_uid,
+            err
+        ),
     };
 }
 
@@ -693,14 +689,12 @@ fn ensure_no_group_already_using_host_gid(config: &Config, host_gid: Gid) {
             "Host GID ({}) not already occupied by existing group.",
             host_gid
         ),
-        Err(err) => {
-            abort!(
-                "Error checking whether the host GID ({}) \
-                 is already occupied by an existing group: {}",
-                host_gid,
-                err
-            );
-        }
+        Err(err) => abort!(
+            "Error checking whether the host GID ({}) \
+                    is already occupied by an existing group: {}",
+            host_gid,
+            err
+        ),
     };
 }
 
@@ -793,13 +787,11 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
 
     let home = match target_account_details.home.to_str() {
         Some(x) => x,
-        None => {
-            abort!(
-                "Error changing '{}' account: home directory path '{}' is not valid unicode",
-                target_account_details.name,
-                target_account_details.home.display()
-            )
-        }
+        None => abort!(
+            "Error changing '{}' account: home directory path '{}' is not valid unicode",
+            target_account_details.name,
+            target_account_details.home.display()
+        ),
     };
 
     // The container may have mounts under the home directory.
