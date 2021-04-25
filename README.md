@@ -1,4 +1,4 @@
-# MatchHostFsOwner: a solution for the Docker host filesystem matching problem
+# MatchHostFsOwner: a solution for the Docker host filesystem owner matching problem
 
 > This documentation is incomplete. It is a work in progress.
 
