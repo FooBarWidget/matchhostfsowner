@@ -1,19 +1,18 @@
 mod abort;
 mod config;
 mod simple_logger;
+mod system_calls;
+mod utils;
 
 use config::{load_config, Config};
 use libc;
-use shell_escape;
-use thiserror::Error;
-use nix::unistd::{self, Gid, Uid};
 use log::{debug, error, info, trace, warn, Level};
+use nix::unistd::{self, Gid, Uid};
+use shell_escape;
 use std::ffi::{CString, NulError, OsString};
-use std::os::unix::{
-    ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt, process::CommandExt,
-};
-use std::result::Result;
-use std::{borrow::Cow, env, fs, io, path::Path, path::PathBuf, process};
+use std::os::unix::{ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
+use std::{borrow::Cow, env, fs, io, path::Path, path::PathBuf, process, result::Result};
+use thiserror::Error;
 
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
@@ -57,7 +56,7 @@ fn check_running_allowed() {
     } else if !allow_non_root() {
         // We don't have the setuid root bit set.
 
-        let self_exe_path = get_self_exe_path();
+        let self_exe_path = utils::get_self_exe_path();
         let self_exe_desc: String;
         let self_exe_path_str: String;
         match self_exe_path {
@@ -101,68 +100,32 @@ fn is_child_of_pid1_docker_init() -> bool {
         return false;
     }
 
-    // For some reason, setuid root binaries cannot readlink("/proc/1/exe")
-    // when the container is started with --user. Reading that symlink requires
-    // the effective UID/GID to be the same as PID 1's UID/GID. So we spawn a
-    // subprocess that drops our effective UID/GID, leaving a normal UID/GID
-    // that's the same as PID 1's.
-    let result = unsafe {
-        process::Command::new("readlink")
-            .arg("-v")
-            .arg("/proc/1/exe")
-            .stderr(process::Stdio::inherit())
-            .pre_exec(drop_euid_egid_during_pre_exec)
-            .output()
-    };
-    match result {
-        Ok(output) => {
-            if output.status.success() {
-                output.stdout == b"/dev/init\n"
-                    || output.stdout == b"/sbin/docker-init\n"
-                    || output.stdout == b"/usr/sbin/docker-init\n"
-            } else {
-                warn!(
-                    "Error determining whether PID 1 is the Docker init process \
-                     /dev/init: subprocess 'readlink /proc/1/exe' failed with code {}",
-                    output
-                        .status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or(String::from("unknown"))
-                );
-                false
-            }
+    match utils::read_link_by_shelling_out(Path::new("/proc/1/exe")) {
+        Ok(path) => {
+            path.as_path() == Path::new("/dev/init")
+                || path.as_path() == Path::new("/sbin/docker-init")
+                || path.as_path() == Path::new("/usr/sbin/docker-init")
         }
-        Err(err) => {
+        Err(utils::ReadLinkError::CommandFailed(status)) => {
             warn!(
                 "Error determining whether PID 1 is the Docker init process \
-                 /dev/init: error spawning subprocess 'readlink /proc/1/exe': {}",
-                err
+                 /dev/init: subprocess 'readlink /proc/1/exe' failed with code {}",
+                status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or(String::from("unknown"))
+            );
+            false
+        }
+        Err(utils::ReadLinkError::IOError(io_err)) => {
+            warn!(
+                "Error determining whether PID 1 is the Docker init process \
+                 /dev/init: error reading from subprocess 'readlink /proc/1/exe': {}",
+                io_err
             );
             false
         }
     }
-}
-
-fn drop_euid_egid_during_pre_exec() -> io::Result<()> {
-    fn nix_to_io_error(err: nix::Error) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, format!("{}", err))
-    }
-
-    unistd::setgid(unistd::getgid()).map_err(nix_to_io_error)?;
-    unistd::setuid(unistd::getuid()).map_err(nix_to_io_error)?;
-    Ok(())
-}
-
-#[cfg(any(target_os = "linux"))]
-fn get_self_exe_path() -> io::Result<PathBuf> {
-    fs::read_link("/proc/self/exe")
-}
-
-#[cfg(not(any(target_os = "linux")))]
-fn get_self_exe_path() -> io::Result<PathBuf> {
-    let args = env::args_os().collect::<Vec<OsString>>();
-    Ok(PathBuf::from(&args[0]))
 }
 
 fn allow_non_root() -> bool {
@@ -189,7 +152,7 @@ fn debug_print_process_privileges() {
 }
 
 fn drop_setuid_root_bit_on_self_exe_if_necessary() {
-    let path = get_self_exe_path().unwrap_or_else(|err| {
+    let path = utils::get_self_exe_path().unwrap_or_else(|err| {
         abort!(
             "Error dropping setuid bit on this program's own executable: \
              error reading symlink /proc/self/exe: {}",
@@ -382,38 +345,6 @@ fn embrace_setuid_bit_privileges_if_provided() {
     });
 }
 
-fn find_unused_uid(min_uid: Uid) -> Result<Option<Uid>, nix::Error> {
-    const MAX_POSSIBLE_UID: u64 = 0xFFFF;
-    let min_uid = min_uid.as_raw();
-    let max_uid = (min_uid as u64 + MAX_POSSIBLE_UID).min(MAX_POSSIBLE_UID) as u32;
-
-    for uid in min_uid + 1..max_uid {
-        match unistd::User::from_uid(Uid::from_raw(uid)) {
-            Ok(Some(_)) => continue,
-            Ok(None) => return Ok(Some(Uid::from_raw(uid))),
-            Err(err) => return Err(err),
-        }
-    }
-
-    Ok(None)
-}
-
-fn find_unused_gid(min_gid: Gid) -> Result<Option<Gid>, nix::Error> {
-    const MAX_POSSIBLE_GID: u64 = 0xFFFF;
-    let min_gid = min_gid.as_raw();
-    let max_gid = (min_gid as u64 + MAX_POSSIBLE_GID).min(MAX_POSSIBLE_GID) as u32;
-
-    for gid in min_gid + 1..max_gid {
-        match unistd::Group::from_gid(Gid::from_raw(gid)) {
-            Ok(Some(_)) => continue,
-            Ok(None) => return Ok(Some(Gid::from_raw(gid))),
-            Err(err) => return Err(err),
-        };
-    }
-
-    Ok(None)
-}
-
 #[derive(Error, Debug)]
 enum AccountModifyError {
     #[error("Error reading /etc/passwd: {0}")]
@@ -577,7 +508,7 @@ fn ensure_no_account_already_using_host_uid(config: &Config, host_uid: Uid) {
                  Will change that account's UID.",
                 host_uid, conflicting_account.name
             );
-            let new_uid = match find_unused_uid(host_uid) {
+            let new_uid = match utils::find_unused_uid(host_uid) {
                 Ok(Some(uid)) => uid,
                 Ok(None) =>
                     abort!(
@@ -661,7 +592,7 @@ fn ensure_no_group_already_using_host_gid(config: &Config, host_gid: Gid) {
                  Will change that group's GID.",
                 host_gid, conflicting_group.name
             );
-            let new_gid = find_unused_gid(host_gid).unwrap_or_else(|err| {
+            let new_gid = utils::find_unused_gid(host_gid).unwrap_or_else(|err| {
                 abort!(
                     "Error changing conflicting group '{}': \
                      error finding an unused GID that's larger \
