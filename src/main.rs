@@ -22,6 +22,18 @@ fn initialize_logger() {
     });
 }
 
+// During the course of this program we shell out to external tools
+// before we've dropped root privileges. So we set PATH to a safe default
+// in order to prevent shelling out to malicious tools.
+fn set_path_to_safe_default() -> Option<OsString> {
+    let old_path = env::var_os("PATH");
+    env::set_var(
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+    return old_path;
+}
+
 // Since this program is supposed to be run with the setuid root biit,
 // we must only allow it to be run in very specific circumstances
 // that are deemed safe.
@@ -998,6 +1010,12 @@ fn path_to_cstring(path: &Path) -> Result<CString, NulError> {
     return CString::new(Vec::from(path_data));
 }
 
+fn restore_old_path(old_path: Option<OsString>) {
+    if old_path.is_some() {
+        env::set_var("PATH", old_path.unwrap());
+    }
+}
+
 fn maybe_execute_next_command(host_account_details: &AccountDetails) {
     let args: Vec<OsString> = env::args_os().collect();
 
@@ -1051,6 +1069,7 @@ fn maybe_execute_next_command(host_account_details: &AccountDetails) {
 
 fn main() {
     initialize_logger();
+    let old_path = set_path_to_safe_default();
     check_running_allowed();
     let config = load_config();
     reconfigure_logger(&config);
@@ -1116,5 +1135,6 @@ fn main() {
     run_hooks(&config, &target_account_details);
     change_user(&target_account_details);
 
+    restore_old_path(old_path);
     maybe_execute_next_command(&target_account_details);
 }
