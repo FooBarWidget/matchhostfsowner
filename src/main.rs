@@ -360,37 +360,13 @@ enum AccountModifyError {
     GroupWriteError(#[source] io::Error),
 }
 
-type BinaryString = Vec<u8>;
-
 fn modify_etc_passwd(
     dry_run: bool,
-    modifier: impl Fn(&mut Vec<BinaryString>),
+    modifier: impl FnMut(&mut Vec<Vec<u8>>),
 ) -> Result<(), AccountModifyError> {
     let content =
         fs::read("/etc/passwd").map_err(|err| AccountModifyError::PasswdReadError(err))?;
-
-    let lines = content.split(|b| *b == b'\n').map(|line| {
-        if line.is_empty() || line.starts_with(b"#") {
-            return line.to_vec();
-        }
-
-        let mut items: Vec<BinaryString> = line
-            .split(|b| *b == b':')
-            .map(|item| item.to_vec())
-            .collect();
-        if items.len() < 7 {
-            return line.to_vec();
-        }
-
-        modifier(&mut items);
-        return items.join(&b':');
-    });
-
-    let mut result = lines.collect::<Vec<BinaryString>>().join(&(b'\n'));
-    if !result.ends_with(b"\n") {
-        result.push(b'\n');
-    }
-
+    let result = utils::modify_etc_passwd_contents(content.as_slice(), modifier);
     if dry_run {
         info!("Dry-run mode on, so not actually modifying /etc/passwd.");
         trace!(
@@ -427,7 +403,7 @@ fn modify_account_uid_gid<'a>(
     new_gid: Gid,
 ) -> Result<(), AccountModifyError> {
     let old_uid_string = old_uid.to_string();
-    modify_etc_passwd(config.dry_run, |items: &mut Vec<BinaryString>| {
+    modify_etc_passwd(config.dry_run, |items: &mut Vec<Vec<u8>>| {
         if items[2] == old_uid_string.as_bytes() {
             items[2] = new_uid.as_raw().to_string().as_bytes().to_vec();
             items[3] = new_gid.as_raw().to_string().as_bytes().to_vec();
@@ -444,7 +420,7 @@ fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), A
             return line.to_vec();
         }
 
-        let mut items: Vec<BinaryString> = line
+        let mut items: Vec<Vec<u8>> = line
             .split(|b| *b == b':')
             .map(|item| item.to_vec())
             .collect();
@@ -459,7 +435,7 @@ fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), A
         return items.join(&b':');
     });
 
-    let mut result = lines.collect::<Vec<BinaryString>>().join(&(b'\n'));
+    let mut result = lines.collect::<Vec<Vec<u8>>>().join(&(b'\n'));
     if !result.ends_with(b"\n") {
         result.push(b'\n');
     }
@@ -489,7 +465,7 @@ fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), A
         libc::endgrent();
     }
 
-    modify_etc_passwd(config.dry_run, |items: &mut Vec<BinaryString>| {
+    modify_etc_passwd(config.dry_run, |items: &mut Vec<Vec<u8>>| {
         if items[3] == old_gid_string.as_bytes() {
             items[3] = new_gid.as_raw().to_string().as_bytes().to_vec();
         }

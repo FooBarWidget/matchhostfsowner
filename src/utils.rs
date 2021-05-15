@@ -48,7 +48,7 @@ pub fn read_link_by_shelling_out(path: &Path) -> Result<PathBuf, ReadLinkError> 
     match result {
         Ok(output) => {
             if output.status.success() {
-                Ok(PathBuf::from(OsStr::from_bytes(output.stdout.as_slice())))
+                Ok(PathBuf::from(OsStr::from_bytes(&output.stdout)))
             } else {
                 Err(ReadLinkError::CommandFailed(output.status))
             }
@@ -113,6 +113,41 @@ fn find_unused_gid_with_impl(
     }
 
     Ok(None)
+}
+
+/// Performs arbitrary modifications on a /etc/passwd-style file's contents.
+///
+/// Given the contents of a passwd-style file, this function parses each entry
+/// as a collection of entry columns, and passes that collection to `modifier`
+/// for arbitrary modification.
+///
+/// Returns the modified passwd content.
+pub fn modify_etc_passwd_contents(
+    passwd_content: &[u8],
+    mut modifier: impl FnMut(&mut Vec<Vec<u8>>),
+) -> Vec<u8> {
+    let lines = passwd_content.split(|b| *b == b'\n').map(|line| {
+        if line.is_empty() || line.starts_with(b"#") {
+            return line.to_vec();
+        }
+
+        let mut items: Vec<Vec<u8>> = line
+            .split(|b| *b == b':')
+            .map(|item| item.to_vec())
+            .collect();
+        if items.len() < 7 {
+            return line.to_vec();
+        }
+
+        modifier(&mut items);
+        return items.join(&b':');
+    });
+
+    let mut result = lines.collect::<Vec<Vec<u8>>>().join(&(b'\n'));
+    if !result.ends_with(b"\n") {
+        result.push(b'\n');
+    }
+    result
 }
 
 #[cfg(test)]
@@ -264,5 +299,71 @@ mod tests {
         assert_eq!(3, system_calls.max_gid);
 
         Ok(())
+    }
+
+    #[test]
+    fn modify_etc_passwd_contents() {
+        let mut call_count = 0;
+        let orig_contents = b"# This is a comment\n\
+              # Another comment\n\
+              \n\
+              some invalid record\n\
+              \n\
+              root:*:0:0:System Administrator:/var/root:/bin/sh\n\
+              daemon:*:1:1:System Services:/var/root:/usr/bin/false\n\
+              \n\
+              nobody:*:-2:-2:Unprivileged User:/var/empty:/usr/bin/false\n";
+        let expected_contents = b"# This is a comment\n\
+              # Another comment\n\
+              \n\
+              some invalid record\n\
+              \n\
+              root2:*:0:0:System Administrator:/var/root:/bin/sh\n\
+              daemon2:*:1:1:System Services:/var/root:/usr/bin/false\n\
+              \n\
+              nobody2:*:-2:-2:Unprivileged User:/var/empty:/usr/bin/false\n";
+
+        let new_contents = super::modify_etc_passwd_contents(orig_contents, |entry| {
+            call_count += 1;
+
+            assert_le!(call_count, 3);
+            assert_eq!(7, entry.len());
+
+            let string_entry: Vec<String> = entry
+                .iter()
+                .map(|item| String::from_utf8_lossy(&item).into_owned())
+                .collect();
+
+            if call_count == 1 {
+                assert_eq!("root", &string_entry[0]);
+                assert_eq!("*", &string_entry[1]);
+                assert_eq!("0", &string_entry[2]);
+                assert_eq!("0", &string_entry[3]);
+                assert_eq!("System Administrator", &string_entry[4]);
+                assert_eq!("/var/root", &string_entry[5]);
+                assert_eq!("/bin/sh", &string_entry[6]);
+            } else if call_count == 2 {
+                assert_eq!("daemon", &string_entry[0]);
+                assert_eq!("*", &string_entry[1]);
+                assert_eq!("1", &string_entry[2]);
+                assert_eq!("1", &string_entry[3]);
+                assert_eq!("System Services", &string_entry[4]);
+                assert_eq!("/var/root", &string_entry[5]);
+                assert_eq!("/usr/bin/false", &string_entry[6]);
+            } else {
+                assert_eq!("nobody", &string_entry[0]);
+                assert_eq!("*", &string_entry[1]);
+                assert_eq!("-2", &string_entry[2]);
+                assert_eq!("-2", &string_entry[3]);
+                assert_eq!("Unprivileged User", &string_entry[4]);
+                assert_eq!("/var/empty", &string_entry[5]);
+                assert_eq!("/usr/bin/false", &string_entry[6]);
+            }
+
+            entry[0].push(b'2');
+        });
+
+        assert_eq!(3, call_count);
+        assert_eq!(expected_contents, new_contents.as_slice());
     }
 }
