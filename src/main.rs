@@ -13,6 +13,7 @@ use std::ffi::{CString, NulError, OsString};
 use std::os::unix::{ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
 use std::{borrow::Cow, env, fs, io, path::Path, path::PathBuf, process, result::Result};
 use thiserror::Error;
+use utils::{AccountDetails, AccountDetailsLookupError};
 
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
@@ -223,31 +224,6 @@ fn lookup_host_account_uid_gid_or_abort(config: &Config) -> (Uid, Gid) {
     });
     debug!("Host account UID/GID = {}:{}", uid, gid);
     (uid, gid)
-}
-
-#[derive(Clone)]
-struct AccountDetails {
-    uid: Uid,
-    gid: Gid,
-    name: String,
-    home: PathBuf,
-    shell: PathBuf,
-    group_name: String,
-}
-
-#[derive(Error, Debug)]
-enum AccountDetailsLookupError {
-    #[error("Error looking up user database entry: {0}")]
-    UserLookupError(#[source] nix::Error),
-
-    #[error("User not found in user database")]
-    UserNotFound,
-
-    #[error("Error looking up group database entry: {0}")]
-    GroupLookupError(#[source] nix::Error),
-
-    #[error("User's primary group (GID {0}) not found in group database")]
-    PrimaryGroupNotFound(Gid),
 }
 
 fn lookup_app_account_details(
@@ -634,36 +610,13 @@ fn ensure_app_group_has_host_gid(
     });
 }
 
-fn lookup_account_details(uid: Uid, gid: Gid) -> Result<AccountDetails, AccountDetailsLookupError> {
-    let entry = match unistd::User::from_uid(uid) {
-        Ok(Some(x)) => x,
-        Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
-        Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
-    };
-
-    let grp_entry = match unistd::Group::from_gid(gid) {
-        Ok(Some(x)) => x,
-        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
-        Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
-    };
-
-    Ok(AccountDetails {
-        uid: uid,
-        gid: gid,
-        name: entry.name,
-        home: entry.dir,
-        shell: entry.shell,
-        group_name: grp_entry.name,
-    })
-}
-
 fn lookup_target_account_details_or_abort(
     config: &Config,
     host_uid: Uid,
     host_gid: Gid,
     using_app_account: bool,
 ) -> AccountDetails {
-    let details = lookup_account_details(host_uid, host_gid).unwrap_or_else(|err| {
+    let details = utils::lookup_account_details(host_uid, host_gid).unwrap_or_else(|err| {
         if using_app_account {
             abort!(
                 "Error looking up app account ('{}') details (UID/GID {}:{}): {}",

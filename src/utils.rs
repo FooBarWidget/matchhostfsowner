@@ -150,6 +150,60 @@ pub fn modify_etc_passwd_contents(
     result
 }
 
+/// Contains details about a user account. It's like [nix::unistd::User]
+/// but also contains the group name.
+#[derive(Clone)]
+pub struct AccountDetails {
+    pub uid: Uid,
+    pub gid: Gid,
+    pub name: String,
+    pub home: PathBuf,
+    pub shell: PathBuf,
+    pub group_name: String,
+}
+
+#[derive(Error, Debug)]
+pub enum AccountDetailsLookupError {
+    #[error("Error looking up user database entry: {0}")]
+    UserLookupError(#[source] nix::Error),
+
+    #[error("User not found in user database")]
+    UserNotFound,
+
+    #[error("Error looking up group database entry: {0}")]
+    GroupLookupError(#[source] nix::Error),
+
+    #[error("User's primary group (GID {0}) not found in group database")]
+    PrimaryGroupNotFound(Gid),
+}
+
+/// Looks up a user account's details by its UID and associated GID.
+pub fn lookup_account_details(
+    uid: Uid,
+    gid: Gid,
+) -> Result<AccountDetails, AccountDetailsLookupError> {
+    let entry = match unistd::User::from_uid(uid) {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
+        Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
+    };
+
+    let grp_entry = match unistd::Group::from_gid(gid) {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
+        Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
+    };
+
+    Ok(AccountDetails {
+        uid: uid,
+        gid: gid,
+        name: entry.name,
+        home: entry.dir,
+        shell: entry.shell,
+        group_name: grp_entry.name,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::system_calls::SystemCalls;
@@ -415,5 +469,13 @@ mod tests {
 
         assert_eq!(3, call_count);
         assert_eq!(expected_contents, new_contents.as_slice());
+    }
+
+    #[test]
+    fn lookup_account_details() -> Result<(), super::AccountDetailsLookupError> {
+        let details = super::lookup_account_details(Uid::current(), Gid::current())?;
+        assert_eq!(Uid::current(), details.uid);
+        assert_eq!(Gid::current(), details.gid);
+        Ok(())
     }
 }
