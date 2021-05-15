@@ -249,6 +249,31 @@ mod tests {
     }
 
     #[test]
+    fn find_unused_uid_error() -> nix::Result<()> {
+        struct MockSystemCalls {
+            call_count: u32,
+        }
+
+        impl SystemCalls for MockSystemCalls {
+            fn lookup_user_by_uid(self: &mut Self, uid: Uid) -> nix::Result<Option<User>> {
+                self.call_count += 1;
+                if uid.as_raw() <= 5 {
+                    Ok(Some(User::from_uid(Uid::current()).unwrap().unwrap()))
+                } else {
+                    Err(nix::Error::UnsupportedOperation)
+                }
+            }
+        }
+
+        let mut system_calls = MockSystemCalls { call_count: 0 };
+        let result = super::find_unused_uid_with_impl(Uid::from_raw(0), &mut system_calls, 10);
+        assert!(result.is_err());
+        assert_eq!(6, system_calls.call_count);
+
+        Ok(())
+    }
+
+    #[test]
     fn find_unused_gid_has_match() -> nix::Result<()> {
         struct MockSystemCalls {
             call_count: u32,
@@ -297,6 +322,31 @@ mod tests {
         assert!(result.is_none(), "No GID found");
         assert_eq!(3, system_calls.call_count);
         assert_eq!(3, system_calls.max_gid);
+
+        Ok(())
+    }
+
+    #[test]
+    fn find_unused_gid_error() -> nix::Result<()> {
+        struct MockSystemCalls {
+            call_count: u32,
+        }
+
+        impl SystemCalls for MockSystemCalls {
+            fn lookup_group_by_gid(self: &mut Self, gid: Gid) -> nix::Result<Option<Group>> {
+                self.call_count += 1;
+                if gid.as_raw() <= 5 {
+                    Ok(Some(Group::from_gid(Gid::current()).unwrap().unwrap()))
+                } else {
+                    Err(nix::Error::UnsupportedOperation)
+                }
+            }
+        }
+
+        let mut system_calls = MockSystemCalls { call_count: 0 };
+        let result = super::find_unused_gid_with_impl(Gid::from_raw(0), &mut system_calls, 10);
+        assert!(result.is_err());
+        assert_eq!(6, system_calls.call_count);
 
         Ok(())
     }
