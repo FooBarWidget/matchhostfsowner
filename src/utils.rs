@@ -69,18 +69,18 @@ fn nix_to_io_error(err: nix::Error) -> io::Error {
 
 /// Finds the first UID that's bigger than `min_uid` and for which no user account exists.
 pub fn find_unused_uid(min_uid: Uid) -> nix::Result<Option<Uid>> {
-    const MAX_POSSIBLE_UID: u64 = 0xFFFF;
+    const MAX_POSSIBLE_UID: u32 = 0xFFFF;
     return find_unused_uid_with_impl(min_uid, &mut RealSystemCalls {}, MAX_POSSIBLE_UID);
 }
 
 fn find_unused_uid_with_impl(
     min_uid: Uid,
     system_calls: &mut impl SystemCalls,
-    max_possible_uid: u64,
+    max_possible_uid: u32,
 ) -> nix::Result<Option<Uid>> {
     let min_uid = min_uid.as_raw();
 
-    for uid in (min_uid + 1)..((max_possible_uid + 1) as u32) {
+    for uid in (min_uid + 1)..=max_possible_uid {
         match system_calls.lookup_user_by_uid(Uid::from_raw(uid)) {
             Ok(Some(_)) => continue,
             Ok(None) => return Ok(Some(Uid::from_raw(uid))),
@@ -93,18 +93,18 @@ fn find_unused_uid_with_impl(
 
 /// Finds the first GID that's bigger than `min_gid` and for which no group account exists.
 pub fn find_unused_gid(min_gid: Gid) -> nix::Result<Option<Gid>> {
-    const MAX_POSSIBLE_GID: u64 = 0xFFFF;
+    const MAX_POSSIBLE_GID: u32 = 0xFFFF;
     return find_unused_gid_with_impl(min_gid, &mut RealSystemCalls {}, MAX_POSSIBLE_GID);
 }
 
 fn find_unused_gid_with_impl(
     min_gid: Gid,
     system_calls: &mut impl SystemCalls,
-    max_possible_gid: u64,
+    max_possible_gid: u32,
 ) -> nix::Result<Option<Gid>> {
     let min_gid = min_gid.as_raw();
 
-    for gid in (min_gid + 1)..((max_possible_gid + 1) as u32) {
+    for gid in (min_gid + 1)..=max_possible_gid {
         match system_calls.lookup_group_by_gid(Gid::from_raw(gid)) {
             Ok(Some(_)) => continue,
             Ok(None) => return Ok(Some(Gid::from_raw(gid))),
