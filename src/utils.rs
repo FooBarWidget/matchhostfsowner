@@ -124,23 +124,45 @@ fn find_unused_gid_with_impl(
 /// Returns the modified passwd content.
 pub fn modify_etc_passwd_contents(
     passwd_content: &[u8],
+    modifier: impl FnMut(&mut Vec<Vec<u8>>),
+) -> Vec<u8> {
+    modify_etc_passwd_or_group_contents(passwd_content, 7, modifier)
+}
+
+/// Performs arbitrary modifications on a /etc/group-style file's contents.
+///
+/// Given the contents of a /etc/group-style file, this function parses each entry
+/// as a collection of entry columns, and passes that collection to `modifier`
+/// for arbitrary modification.
+///
+/// Returns the modified /etc/group content.
+pub fn modify_etc_group_contents(
+    group_file_content: &[u8],
+    modifier: impl FnMut(&mut Vec<Vec<u8>>),
+) -> Vec<u8> {
+    modify_etc_passwd_or_group_contents(group_file_content, 4, modifier)
+}
+
+fn modify_etc_passwd_or_group_contents(
+    content: &[u8],
+    num_record_columns: usize,
     mut modifier: impl FnMut(&mut Vec<Vec<u8>>),
 ) -> Vec<u8> {
-    let lines = passwd_content.split(|b| *b == b'\n').map(|line| {
+    let lines = content.split(|b| *b == b'\n').map(|line| {
         if line.is_empty() || line.starts_with(b"#") {
             return line.to_vec();
         }
 
-        let mut items: Vec<Vec<u8>> = line
+        let mut columns: Vec<Vec<u8>> = line
             .split(|b| *b == b':')
-            .map(|item| item.to_vec())
+            .map(|column| column.to_vec())
             .collect();
-        if items.len() < 7 {
+        if columns.len() < num_record_columns {
             return line.to_vec();
         }
 
-        modifier(&mut items);
-        return items.join(&b':');
+        modifier(&mut columns);
+        return columns.join(&b':');
     });
 
     let mut result = lines.collect::<Vec<Vec<u8>>>().join(&(b'\n'));
@@ -528,44 +550,101 @@ mod tests {
               \n\
               nobody2:*:-2:-2:Unprivileged User:/var/empty:/usr/bin/false\n";
 
-        let new_contents = super::modify_etc_passwd_contents(orig_contents, |entry| {
+        let new_contents = super::modify_etc_passwd_contents(orig_contents, |columns| {
             call_count += 1;
 
             assert_le!(call_count, 3);
-            assert_eq!(7, entry.len());
+            assert_eq!(7, columns.len());
 
-            let string_entry: Vec<String> = entry
+            let string_columns: Vec<String> = columns
                 .iter()
                 .map(|item| String::from_utf8_lossy(&item).into_owned())
                 .collect();
 
             if call_count == 1 {
-                assert_eq!("root", &string_entry[0]);
-                assert_eq!("*", &string_entry[1]);
-                assert_eq!("0", &string_entry[2]);
-                assert_eq!("0", &string_entry[3]);
-                assert_eq!("System Administrator", &string_entry[4]);
-                assert_eq!("/var/root", &string_entry[5]);
-                assert_eq!("/bin/sh", &string_entry[6]);
+                assert_eq!("root", &string_columns[0]);
+                assert_eq!("*", &string_columns[1]);
+                assert_eq!("0", &string_columns[2]);
+                assert_eq!("0", &string_columns[3]);
+                assert_eq!("System Administrator", &string_columns[4]);
+                assert_eq!("/var/root", &string_columns[5]);
+                assert_eq!("/bin/sh", &string_columns[6]);
             } else if call_count == 2 {
-                assert_eq!("daemon", &string_entry[0]);
-                assert_eq!("*", &string_entry[1]);
-                assert_eq!("1", &string_entry[2]);
-                assert_eq!("1", &string_entry[3]);
-                assert_eq!("System Services", &string_entry[4]);
-                assert_eq!("/var/root", &string_entry[5]);
-                assert_eq!("/usr/bin/false", &string_entry[6]);
+                assert_eq!("daemon", &string_columns[0]);
+                assert_eq!("*", &string_columns[1]);
+                assert_eq!("1", &string_columns[2]);
+                assert_eq!("1", &string_columns[3]);
+                assert_eq!("System Services", &string_columns[4]);
+                assert_eq!("/var/root", &string_columns[5]);
+                assert_eq!("/usr/bin/false", &string_columns[6]);
             } else {
-                assert_eq!("nobody", &string_entry[0]);
-                assert_eq!("*", &string_entry[1]);
-                assert_eq!("-2", &string_entry[2]);
-                assert_eq!("-2", &string_entry[3]);
-                assert_eq!("Unprivileged User", &string_entry[4]);
-                assert_eq!("/var/empty", &string_entry[5]);
-                assert_eq!("/usr/bin/false", &string_entry[6]);
+                assert_eq!("nobody", &string_columns[0]);
+                assert_eq!("*", &string_columns[1]);
+                assert_eq!("-2", &string_columns[2]);
+                assert_eq!("-2", &string_columns[3]);
+                assert_eq!("Unprivileged User", &string_columns[4]);
+                assert_eq!("/var/empty", &string_columns[5]);
+                assert_eq!("/usr/bin/false", &string_columns[6]);
             }
 
-            entry[0].push(b'2');
+            columns[0].push(b'2');
+        });
+
+        assert_eq!(3, call_count);
+        assert_eq!(expected_contents, new_contents.as_slice());
+    }
+
+    #[test]
+    fn modify_etc_group_contents() {
+        let mut call_count = 0;
+        let orig_contents = b"# This is a comment\n\
+              # Another comment\n\
+              \n\
+              some invalid record\n\
+              \n\
+              nogroup:*:-1:\n\
+              wheel:*:0:root\n\
+              \n\
+              daemon:*:1:root\n";
+        let expected_contents = b"# This is a comment\n\
+              # Another comment\n\
+              \n\
+              some invalid record\n\
+              \n\
+              nogroup2:*:-1:\n\
+              wheel2:*:0:root\n\
+              \n\
+              daemon2:*:1:root\n";
+
+        let new_contents = super::modify_etc_group_contents(orig_contents, |columns| {
+            call_count += 1;
+
+            assert_le!(call_count, 3);
+            assert_eq!(4, columns.len());
+
+            let string_columns: Vec<String> = columns
+                .iter()
+                .map(|item| String::from_utf8_lossy(&item).into_owned())
+                .collect();
+
+            if call_count == 1 {
+                assert_eq!("nogroup", &string_columns[0]);
+                assert_eq!("*", &string_columns[1]);
+                assert_eq!("-1", &string_columns[2]);
+                assert_eq!("", &string_columns[3]);
+            } else if call_count == 2 {
+                assert_eq!("wheel", &string_columns[0]);
+                assert_eq!("*", &string_columns[1]);
+                assert_eq!("0", &string_columns[2]);
+                assert_eq!("root", &string_columns[3]);
+            } else {
+                assert_eq!("daemon", &string_columns[0]);
+                assert_eq!("*", &string_columns[1]);
+                assert_eq!("1", &string_columns[2]);
+                assert_eq!("root", &string_columns[3]);
+            }
+
+            columns[0].push(b'2');
         });
 
         assert_eq!(3, call_count);

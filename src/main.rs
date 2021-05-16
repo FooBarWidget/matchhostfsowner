@@ -378,10 +378,10 @@ fn modify_account_uid_gid<'a>(
     new_gid: Gid,
 ) -> Result<(), AccountModifyError> {
     let old_uid_string = old_uid.to_string();
-    modify_etc_passwd(config.dry_run, |items: &mut Vec<Vec<u8>>| {
-        if items[2] == old_uid_string.as_bytes() {
-            items[2] = new_uid.to_string().as_bytes().to_vec();
-            items[3] = new_gid.to_string().as_bytes().to_vec();
+    modify_etc_passwd(config.dry_run, |columns: &mut Vec<Vec<u8>>| {
+        if columns[2] == old_uid_string.as_bytes() {
+            columns[2] = new_uid.to_string().as_bytes().to_vec();
+            columns[3] = new_gid.to_string().as_bytes().to_vec();
         }
     })
 }
@@ -389,32 +389,11 @@ fn modify_account_uid_gid<'a>(
 fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), AccountModifyError> {
     let old_gid_string = old_gid.to_string();
     let content = fs::read("/etc/group").map_err(|err| AccountModifyError::GroupReadError(err))?;
-
-    let lines = content.split(|b| *b == b'\n').map(|line| {
-        if line.is_empty() || line.starts_with(b"#") {
-            return line.to_vec();
+    let result = utils::modify_etc_group_contents(&content, |columns| {
+        if columns[2] == old_gid_string.as_bytes() {
+            columns[2] = new_gid.to_string().as_bytes().to_vec();
         }
-
-        let mut items: Vec<Vec<u8>> = line
-            .split(|b| *b == b':')
-            .map(|item| item.to_vec())
-            .collect();
-        if items.len() < 4 {
-            return line.to_vec();
-        }
-
-        if items[2] == old_gid_string.as_bytes() {
-            items[2] = new_gid.as_raw().to_string().as_bytes().to_vec();
-        }
-
-        return items.join(&b':');
     });
-
-    let mut result = lines.collect::<Vec<Vec<u8>>>().join(&(b'\n'));
-    if !result.ends_with(b"\n") {
-        result.push(b'\n');
-    }
-
     if config.dry_run {
         info!("Dry-run mode on, so not actually modifying /etc/group.");
         trace!(
@@ -440,9 +419,9 @@ fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), A
         libc::endgrent();
     }
 
-    modify_etc_passwd(config.dry_run, |items: &mut Vec<Vec<u8>>| {
-        if items[3] == old_gid_string.as_bytes() {
-            items[3] = new_gid.as_raw().to_string().as_bytes().to_vec();
+    modify_etc_passwd(config.dry_run, |columns| {
+        if columns[3] == old_gid_string.as_bytes() {
+            columns[3] = new_gid.to_string().as_bytes().to_vec();
         }
     })
 }
