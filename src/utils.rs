@@ -1,19 +1,17 @@
 use super::system_calls::{RealSystemCalls, SystemCalls};
 use nix::unistd::{self, Gid, Uid};
 use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt};
-use std::{
-    borrow::Cow, env, ffi::OsStr, ffi::OsString, fs, io, path::Path, path::PathBuf, process,
-};
+use std::{borrow::Cow, ffi::OsStr, ffi::OsString, fs, io, path::Path, path::PathBuf, process};
 use thiserror::Error;
 
 #[cfg(target_os = "linux")]
 pub fn get_self_exe_path() -> io::Result<PathBuf> {
-    fs::read_link("/proc/self/exe")
+    std::fs::read_link("/proc/self/exe")
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn get_self_exe_path() -> io::Result<PathBuf> {
-    let args = env::args_os().collect::<Vec<OsString>>();
+    let args = std::env::args_os().collect::<Vec<OsString>>();
     Ok(PathBuf::from(&args[0]))
 }
 

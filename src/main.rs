@@ -380,8 +380,8 @@ fn modify_account_uid_gid<'a>(
     let old_uid_string = old_uid.to_string();
     modify_etc_passwd(config.dry_run, |items: &mut Vec<Vec<u8>>| {
         if items[2] == old_uid_string.as_bytes() {
-            items[2] = new_uid.as_raw().to_string().as_bytes().to_vec();
-            items[3] = new_gid.as_raw().to_string().as_bytes().to_vec();
+            items[2] = new_uid.to_string().as_bytes().to_vec();
+            items[3] = new_gid.to_string().as_bytes().to_vec();
         }
     })
 }
