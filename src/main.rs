@@ -701,7 +701,7 @@ fn run_hooks(config: &Config, host_account_details: &AccountDetails) {
         }
 
         let host_uid_string = host_account_details.uid.to_string();
-        let host_gid_string = host_account_details.uid.to_string();
+        let host_gid_string = host_account_details.gid.to_string();
         let result = process::Command::new(&hook)
             .env("MHF_HOST_UID", &host_uid_string)
             .env("MHF_HOST_GID", &host_gid_string)
