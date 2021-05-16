@@ -1,7 +1,9 @@
 use super::system_calls::{RealSystemCalls, SystemCalls};
 use nix::unistd::{self, Gid, Uid};
-use std::os::unix::{ffi::OsStrExt, process::CommandExt};
-use std::{env, ffi::OsStr, ffi::OsString, io, path::Path, path::PathBuf, process};
+use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt};
+use std::{
+    borrow::Cow, env, ffi::OsStr, ffi::OsString, fs, io, path::Path, path::PathBuf, process,
+};
 use thiserror::Error;
 
 #[cfg(target_os = "linux")]
@@ -204,14 +206,115 @@ pub fn lookup_account_details(
     })
 }
 
+#[derive(Error, Debug)]
+pub enum ChownError {
+    #[error("Path is invalid UTF-8")]
+    PathInvalidUTF8,
+
+    #[error("Process error: {0}")]
+    CommandFailed(process::ExitStatus, String),
+
+    #[error("I/O error: {0}")]
+    IOError(#[source] io::Error, String),
+}
+
+/// Changes the ownership of a directory and its contents recursively, but without crossing.
+/// filesystem boundaries.
+///
+/// Not crossing filesystem boundaries is important because the container may have mounts
+/// under the home directory. For example, when using ekidd/rust-musl-builder the user is
+/// supposed to mount a host directory into /home/rust/src.
+///
+/// We use 'find' instead of 'chown -R' in order not to cross filesystem
+/// boundaries.
+pub fn chown_dir_recursively_no_fs_boundary_crossing(
+    path: &Path,
+    uid: Uid,
+    gid: Gid,
+) -> Result<(), ChownError> {
+    let path_str;
+
+    match path.to_str() {
+        Some(s) => path_str = s,
+        None => return Err(ChownError::PathInvalidUTF8),
+    }
+
+    let command_string = format!(
+        "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
+        shell_escape::escape(Cow::from(path_str)),
+        uid,
+        gid
+    );
+    let result = process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(command_string.as_str())
+        .status();
+    match result {
+        Ok(status) => {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(ChownError::CommandFailed(status, command_string))
+            }
+        }
+        Err(err) => Err(ChownError::IOError(err, command_string)),
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum ListDirError {
+    #[error("Error reading directory {0}: {1}")]
+    ReadDirError(String, #[source] io::Error),
+
+    #[error("Error reading directory entry from {0}: {1}")]
+    ReadDirEntryError(String, #[source] io::Error),
+
+    #[error("Error querying file metadata for {0}: {1}")]
+    QueryMetaError(String, #[source] io::Error),
+}
+
+pub fn list_executable_files_sorted(dir: &impl AsRef<Path>) -> Result<Vec<PathBuf>, ListDirError> {
+    let entries = fs::read_dir(&dir)
+        .map_err(|err| ListDirError::ReadDirError(dir.as_ref().display().to_string(), err))?;
+    let mut result = Vec::<PathBuf>::new();
+
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            ListDirError::ReadDirEntryError(dir.as_ref().display().to_string(), err)
+        })?;
+        let metadata = entry
+            .path()
+            .metadata()
+            .map_err(|err| ListDirError::QueryMetaError(entry.path().display().to_string(), err))?;
+
+        if metadata.is_file() && (metadata.permissions().mode() & 0o111) != 0 {
+            result.push(entry.path());
+        }
+    }
+
+    result.sort_unstable();
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::system_calls::SystemCalls;
     use more_asserts::*;
     use nix::unistd::{Gid, Group, Uid, User};
-    use std::os::unix::fs::symlink;
-    use std::{fs::File, io};
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+    use std::{fs, fs::File, io, path::Path, thread, time::Duration};
     use tempfile::tempdir;
+
+    fn create_file_return_ctime(path: &impl AsRef<Path>) -> io::Result<i64> {
+        File::create(path)?;
+        Ok(path.as_ref().metadata()?.ctime_nsec())
+    }
+
+    fn create_dir_return_ctime(path: &impl AsRef<Path>) -> io::Result<i64> {
+        fs::create_dir(path)?;
+        Ok(path.as_ref().metadata()?.ctime_nsec())
+    }
 
     #[test]
     fn get_self_exe_path() -> io::Result<()> {
@@ -476,6 +579,79 @@ mod tests {
         let details = super::lookup_account_details(Uid::current(), Gid::current())?;
         assert_eq!(Uid::current(), details.uid);
         assert_eq!(Gid::current(), details.gid);
+        Ok(())
+    }
+
+    #[test]
+    fn chown_dir_recursively_no_fs_boundary_crossing() -> io::Result<()> {
+        let tempdir = tempdir()?;
+        let file1_path = tempdir.path().join("file1");
+        let subdir_path = tempdir.path().join("subdir");
+        let file2_path = subdir_path.join("file2");
+
+        let tempdir_orig_ctime = tempdir.path().metadata()?.ctime_nsec();
+        let file1_orig_ctime = create_file_return_ctime(&file1_path)?;
+        let subdir_orig_ctime = create_dir_return_ctime(&subdir_path)?;
+        let file2_orig_ctime = create_dir_return_ctime(&file2_path)?;
+
+        // Sleep some time to allow observing ctime changes.
+        thread::sleep(Duration::from_millis(10));
+
+        super::chown_dir_recursively_no_fs_boundary_crossing(
+            tempdir.path(),
+            Uid::current(),
+            Gid::current(),
+        )
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        assert_ne!(tempdir.path().metadata()?.ctime_nsec(), tempdir_orig_ctime);
+        assert_ne!(file1_path.metadata()?.ctime_nsec(), file1_orig_ctime);
+        assert_ne!(subdir_path.metadata()?.ctime_nsec(), subdir_orig_ctime);
+        assert_ne!(file2_path.metadata()?.ctime_nsec(), file2_orig_ctime);
+
+        Ok(())
+    }
+
+    fn create_file_with_mode(path: &impl AsRef<Path>, mode: u32) -> io::Result<()> {
+        File::create(path)?;
+        let mut permissions = path.as_ref().metadata()?.permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions)?;
+        Ok(())
+    }
+
+    fn create_dir_with_mode(path: &impl AsRef<Path>, mode: u32) -> io::Result<()> {
+        fs::create_dir(path)?;
+        let mut permissions = path.as_ref().metadata()?.permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions)?;
+        Ok(())
+    }
+
+    #[test]
+    fn list_executable_files_sorted() -> io::Result<()> {
+        let tempdir = tempdir()?;
+        let exe1_path = tempdir.path().join("exe1");
+        let exe2_path = tempdir.path().join("exe2");
+        let exe3_path = tempdir.path().join("exe3");
+        let exe4_path = tempdir.path().join("exe4");
+
+        create_file_with_mode(&exe1_path, 0o755)?;
+        create_file_with_mode(&exe2_path, 0o700)?;
+        create_file_with_mode(&exe3_path, 0o070)?;
+        create_file_with_mode(&exe4_path, 0o007)?;
+        create_dir_with_mode(&tempdir.path().join("dir"), 0o755)?;
+        create_file_with_mode(&tempdir.path().join("file1"), 0o600)?;
+
+        let result = super::list_executable_files_sorted(&tempdir.path())
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+        assert_eq!(4, result.len());
+        assert_eq!(exe1_path, result[0]);
+        assert_eq!(exe2_path, result[1]);
+        assert_eq!(exe3_path, result[2]);
+        assert_eq!(exe4_path, result[3]);
+
         Ok(())
     }
 }

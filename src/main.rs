@@ -8,10 +8,9 @@ use config::{load_config, Config};
 use libc;
 use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
-use shell_escape;
 use std::ffi::{CString, NulError, OsString};
 use std::os::unix::{ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
-use std::{borrow::Cow, env, fs, io, path::Path, path::PathBuf, process, result::Result};
+use std::{env, fs, io, path::Path, path::PathBuf, process, result::Result};
 use thiserror::Error;
 use utils::{AccountDetails, AccountDetailsLookupError};
 
@@ -654,104 +653,52 @@ fn maybe_chown_target_account_home_dir(config: &Config, target_account_details: 
         return;
     }
 
-    let home = match target_account_details.home.to_str() {
-        Some(x) => x,
-        None => abort!(
+    debug!(
+        "Recursively changing ownership of '{}' home directory: {}",
+        target_account_details.name,
+        target_account_details.home.display()
+    );
+    if config.dry_run {
+        info!("Dry-run mode on, so not actually running changing home directory ownership.");
+        return;
+    }
+
+    let result = utils::chown_dir_recursively_no_fs_boundary_crossing(
+        target_account_details.home.as_path(),
+        target_account_details.uid,
+        target_account_details.gid,
+    );
+    match result {
+        Ok(_) => (),
+        Err(utils::ChownError::PathInvalidUTF8) => abort!(
             "Error changing '{}' account: home directory path '{}' is not valid unicode",
             target_account_details.name,
             target_account_details.home.display()
         ),
-    };
-
-    // The container may have mounts under the home directory.
-    // For example, when using ekidd/rust-musl-builder the user is supposed
-    // to mount the a host directory into /home/rust/src.
-    //
-    // We use 'find' instead of 'chown -R' in order not to cross filesystem
-    // boundaries.
-    let command_string = format!(
-        "find {} -xdev -print0 | xargs -0 -n 128 -x chown {}:{}",
-        shell_escape::escape(Cow::from(home)),
-        target_account_details.uid,
-        target_account_details.gid
-    );
-    debug!("Running command with shell: {}", command_string);
-
-    if config.dry_run {
-        info!(
-            "Dry-run mode on, so not actually running 'chown' on {}.",
-            target_account_details.home.display()
-        );
-        return;
-    }
-
-    let result = process::Command::new("/bin/sh")
-        .arg("-c")
-        .arg(command_string.as_str())
-        .status();
-    match result {
-        Ok(status) => {
-            if !status.success() {
-                abort!(
-                    "Error changing '{}' account: command '{}' failed with exit code {}",
-                    target_account_details.name,
-                    command_string,
-                    status
-                        .code()
-                        .map(|c| c.to_string())
-                        .unwrap_or(String::from("unknown"))
-                );
-            }
-        }
-        Err(err) => abort!(
-            "Error spawning a shell process for command '{}': {}",
-            command_string,
-            err
+        Err(utils::ChownError::CommandFailed(status, command)) => abort!(
+            "Error changing '{}' account: command '{}' failed with exit code {}",
+            target_account_details.name,
+            command,
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or(String::from("unknown"))
         ),
-    };
-}
-
-#[derive(Error, Debug)]
-pub enum ListDirError {
-    #[error("Error reading directory {0}: {1}")]
-    ReadDirError(String, #[source] io::Error),
-
-    #[error("Error reading directory entry from {0}: {1}")]
-    ReadDirEntryError(String, #[source] io::Error),
-
-    #[error("Error querying file metadata for {0}: {1}")]
-    QueryMetaError(String, #[source] io::Error),
-}
-
-fn list_executable_files_sorted(dir: &PathBuf) -> Result<Vec<PathBuf>, ListDirError> {
-    let entries = fs::read_dir(&dir)
-        .map_err(|err| ListDirError::ReadDirError(dir.display().to_string(), err))?;
-    let mut result = Vec::<PathBuf>::new();
-
-    for entry in entries {
-        let entry =
-            entry.map_err(|err| ListDirError::ReadDirEntryError(dir.display().to_string(), err))?;
-        let metadata = entry
-            .path()
-            .metadata()
-            .map_err(|err| ListDirError::QueryMetaError(entry.path().display().to_string(), err))?;
-
-        if metadata.is_file() && (metadata.permissions().mode() & 0o111) != 0 {
-            result.push(entry.path());
-        }
+        Err(utils::ChownError::IOError(io_err, command)) => abort!(
+            "Error changing '{}' account: error spawning a shell process for command '{}': {}",
+            target_account_details.name,
+            command,
+            io_err
+        ),
     }
-
-    result.sort_unstable();
-
-    Ok(result)
 }
 
 fn run_hooks(config: &Config, host_account_details: &AccountDetails) {
     let hooks_dir = PathBuf::from(&config.hooks_dir);
-    let hooks = match list_executable_files_sorted(&hooks_dir) {
+    let hooks = match utils::list_executable_files_sorted(&hooks_dir) {
         Ok(x) => x,
         Err(err) => match &err {
-            ListDirError::ReadDirError(_, cause) => {
+            utils::ListDirError::ReadDirError(_, cause) => {
                 if cause.kind() == io::ErrorKind::NotFound {
                     debug!("No hooks found in {}.", hooks_dir.display().to_string());
                     return;
