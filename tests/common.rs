@@ -18,6 +18,27 @@ impl fmt::Debug for GenericError {
     }
 }
 
+#[macro_export]
+macro_rules! assert_contains_substr {
+    ($str:expr, $substr:expr) => {{
+        let (str, substr) = (&($str), &($substr));
+        if str.find(substr).is_none() {
+            panic!(
+                "assertion failed: `contains_substr(str, subtr)`\n\
+                    substr: `{:?}`\n\
+                    str:\n\
+                    ---------- BEGIN ----------\n\
+                    {}\n\
+                    ----------- END -----------\n",
+                substr, str
+            );
+        }
+    }};
+    ($str:expr, $substr:expr, ) => {{
+        assert_contains_substr!($str, $substr);
+    }};
+}
+
 pub struct TestImage {
     pub image_name: String,
 }
