@@ -11,5 +11,7 @@ jobs:
     - uses: actions/checkout@v2
     - name: Build
       run: cargo build --color=always --verbose
+    - name: Build integration test base
+      run: make integration-test-base
     - name: Run tests
       run: cargo test --color=always --verbose

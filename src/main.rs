@@ -33,7 +33,7 @@ fn set_path_to_safe_default() -> Option<OsString> {
     return old_path;
 }
 
-// Since this program is supposed to be run with the setuid root biit,
+// Since matchhostfsowner is supposed to be run with the setuid root biit,
 // we must only allow it to be run in very specific circumstances
 // that are deemed safe.
 fn check_running_allowed() {
@@ -43,13 +43,13 @@ fn check_running_allowed() {
             && !unistd::getuid().is_root()
         {
             abort!(
-                "This program may only be run when one \
+                "Matchhostfsowner may only be run when one \
                  of the following conditions apply:\n\
                  \n \
-                 - This program is run as PID 1.\n \
-                 - This program is a child of PID 1, and PID 1 is the Docker \
+                 - Matchhostfsowner is run as PID 1.\n \
+                 - Matchhostfsowner is a child of PID 1, and PID 1 is the Docker \
                  init process (/dev/init, /(usr/)sbin/docker-init).\n \
-                 - This program is run with root privileges (but not \
+                 - Matchhostfsowner is run with root privileges (but not \
                  via the setuid root bit)."
             );
         }
@@ -61,20 +61,20 @@ fn check_running_allowed() {
         let self_exe_path_str: String;
         match self_exe_path {
             Ok(path) => {
-                self_exe_desc = path.to_string_lossy().into_owned();
+                self_exe_desc = path.display().to_string();
                 self_exe_path_str = self_exe_desc.clone();
             }
             Err(err) => {
                 warn!("Error reading symlink /proc/self/exe: {}", err);
-                self_exe_desc = String::from("this program's executable file");
-                self_exe_path_str = String::from("/path-to-this-program's-exe");
+                self_exe_desc = String::from("matchhostfsowner's executable file");
+                self_exe_path_str = String::from("/path-to-matchhostfsowner's-exe");
             }
         };
 
         abort!(
-            "This program requires root privileges to operate.\n\
+            "Matchhostfsowner requires root privileges to operate.\n\
              \n \
-             - First time running this program in this container?\n   \
+             - First invocation of matchhostfsowner in this container?\n   \
              Then this probably means that you didn't set the setuid root bit \
              on {}. Please set it with:\n\
              \n     \
@@ -82,12 +82,12 @@ fn check_running_allowed() {
              chmod +s {}\n\
              \n \
              - Not the first time?\n   \
-             Then this error is normal. For security reasons, this program \
-             may only be invoked once, so this program drops its own setuid \
+             Then this error is normal. For security reasons, matchhostfsowner \
+             may only be invoked once, so matchhostfsowner drops its own setuid \
              root bit after executing once.\n\
              \n \
-             - Hint: set MHF_ALLOW_NON_ROOT=1 to force running this \
-             program despite not having root privileges.",
+             - Hint: set MHF_ALLOW_NON_ROOT=1 to force running matchhostfsowner \
+             despite not having root privileges.",
             self_exe_desc,
             self_exe_path_str,
             self_exe_path_str
@@ -154,14 +154,14 @@ fn debug_print_process_privileges() {
 fn drop_setuid_root_bit_on_self_exe_if_necessary() {
     let path = utils::get_self_exe_path().unwrap_or_else(|err| {
         abort!(
-            "Error dropping setuid bit on this program's own executable: \
+            "Error dropping setuid bit on this matchhostfsowner's own executable: \
              error reading symlink /proc/self/exe: {}",
             err
         );
     });
     let meta = fs::metadata(&path).unwrap_or_else(|err| {
         abort!(
-            "Error dropping setuid bit on this program's own executable: \
+            "Error dropping setuid bit on this matchhostfsowner's own executable: \
              error stat()'ing /proc/self/exe: {}",
             err
         );
@@ -175,7 +175,7 @@ fn drop_setuid_root_bit_on_self_exe_if_necessary() {
         perms.set_mode(perms.mode() & !0o6000);
         fs::set_permissions(path, perms).unwrap_or_else(|err| {
             abort!(
-                "Error dropping setuid bit on this program's own executable: {}",
+                "Error dropping setuid bit on matchhostfsowner's own executable: {}",
                 err
             );
         });

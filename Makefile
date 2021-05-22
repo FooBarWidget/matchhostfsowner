@@ -1,4 +1,4 @@
-.PHONE: static-binary package
+.PHONE: static-binary package integration-test-base
 
 VERSION := $(shell grep '^version' Cargo.toml | cut -d '=' -f 2 | sed 's/[ "]//g')
 RUST_MUSL_BUILDER_VERSION := 1.50.0
@@ -42,3 +42,6 @@ target/docker-helper/matchhostfsowner:
 		https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.4/matchhostfsowner-0.9.4-x86_64-linux.gz
 	gunzip target/docker-helper/matchhostfsowner.gz
 	chmod +x target/docker-helper/matchhostfsowner
+
+integration-test-base:
+	docker build -t matchhostfsowner-integration-test-base -f Dockerfile.integration-test-base .
