@@ -14,6 +14,7 @@ Surprisingly, creating such a database entry in a robust manner is more complica
 
  1. Setup an account named `app` in your container.
  2. Setup `matchhostfsowner` as the container entrypoint.
- 3. Finally, the user is supposed to run the container with `docker run --user "$(id -u):$(id -g)" ...`.
+ 3. Make `matchhostfsowner` setuid root.
+ 4. Finally, the user is supposed to run the container with `docker run --user "$(id -u):$(id -g)" ...`.
 
 If something goes wrong and you don't know why, then set the env var `MHF_LOG_LEVEL=debug` to see debugging logs.
