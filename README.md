@@ -8,7 +8,8 @@ When you run a Docker container without root privileges, then that container may
 
 `matchhostfsowner` helps solve this problem by ensuring that the UID that the container runs as, has a corresponding user database entry inside the container.
 
-Surprisingly, creating such a database entry in a robust manner is more complicated than it seems. TODO: blog about this.
+Surprisingly, creating such a database entry in a robust manner is more complicated than it seems. See this blog post: [Docker and the host filesystem owner matching problem
+Docker and the host filesystem owner matching problem](https://www.joyfulbikeshedding.com/blog/2021-03-15-docker-and-the-host-filesystem-owner-matching-problem.html)
 
 ## Usage
 
