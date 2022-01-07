@@ -2,7 +2,7 @@
 name = "matchhostfsowner"
 version = "0.9.5"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [profile.release]
 opt-level = "z"
