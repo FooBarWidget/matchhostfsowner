@@ -19,3 +19,17 @@ Docker and the host filesystem owner matching problem](https://www.joyfulbikeshe
  4. Finally, the user is supposed to run the container with `docker run --user "$(id -u):$(id -g)" ...`.
 
 If something goes wrong and you don't know why, then set the env var `MHF_LOG_LEVEL=debug` to see debugging logs.
+
+## Running tests
+
+Before running tests, build the integration test base image first. Do this every time you've modified the sources.
+
+~~~bash
+make integration-test-base
+~~~
+
+Then:
+
+~~~bash
+cargo test
+~~~
