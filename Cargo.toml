@@ -1,6 +1,6 @@
 [package]
 name = "matchhostfsowner"
-version = "0.9.5"
+version = "0.9.6"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
 edition = "2021"
 
@@ -19,7 +19,7 @@ log = { version = "^0.4.6", features = ["std"] }
 nix = "^0.19.1"
 thiserror = "^1.0.24"
 libc = "^0.2"
-shell-escape = "^0.1.4"
+shell-escape = "^0.1.5"
 
 [dev-dependencies]
 tempfile = "3"
