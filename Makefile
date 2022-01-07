@@ -1,7 +1,7 @@
 .PHONE: static-binary package integration-test-base
 
 VERSION := $(shell grep '^version' Cargo.toml | cut -d '=' -f 2 | sed 's/[ "]//g')
-RUST_MUSL_BUILDER_VERSION := 1.50.0
+RUST_MUSL_BUILDER_VERSION := 1.57.0
 TTY := $(shell if tty -s; then echo '-ti'; fi)
 
 static-binary: target/docker-helper/matchhostfsowner
