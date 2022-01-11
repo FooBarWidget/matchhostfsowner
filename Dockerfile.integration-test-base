@@ -1,7 +1,7 @@
 FROM lukemathwalker/cargo-chef AS planner
 WORKDIR app
 COPY . .
-RUN cargo chef prepare  --recipe-path recipe.json
+RUN cargo chef prepare --recipe-path recipe.json
 
 FROM lukemathwalker/cargo-chef AS cacher
 WORKDIR app
@@ -10,7 +10,9 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 FROM rust:1.57-slim-buster AS builder
 WORKDIR app
-COPY . .
+COPY Cargo.toml .
+COPY Cargo.lock .
+COPY src src
 # Copy over the cached dependencies
 COPY --from=cacher /app/target target
 COPY --from=cacher $CARGO_HOME $CARGO_HOME
@@ -18,4 +20,6 @@ RUN cargo build
 
 FROM debian:buster-slim
 COPY --from=builder /app/target/debug/matchhostfsowner /sbin/matchhostfsowner
-ENTRYPOINT ["/sbin/matchhostfsowner"]
+# Redirect stderr to stdout so that — if the container is started in the background with 'docker run -d' —
+# stdout and stderr data don't get interleaved wrongly in 'docker logs' output.
+ENTRYPOINT ["/bin/sh", "-c", "exec /sbin/matchhostfsowner \"$@\" 2>&1", "-"]

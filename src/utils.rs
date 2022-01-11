@@ -172,57 +172,67 @@ fn modify_etc_passwd_or_group_contents(
     result
 }
 
-/// Contains details about a user account. It's like [nix::unistd::User]
-/// but also contains the group name.
+/// Contains details about a user account.
 #[derive(Clone)]
-pub struct AccountDetails {
-    pub uid: Uid,
-    pub gid: Gid,
+pub struct UserDetails {
     pub name: String,
+    pub uid: Uid,
+    pub primary_gid: Gid,
     pub home: PathBuf,
     pub shell: PathBuf,
-    pub group_name: String,
 }
 
 #[derive(Error, Debug)]
-pub enum AccountDetailsLookupError {
+pub enum UserDetailsLookupError {
     #[error("Error looking up user database entry: {0}")]
-    UserLookupError(#[source] nix::Error),
+    LookupError(#[source] nix::Error),
 
     #[error("User not found in user database")]
-    UserNotFound,
-
-    #[error("Error looking up group database entry: {0}")]
-    GroupLookupError(#[source] nix::Error),
-
-    #[error("User's primary group (GID {0}) not found in group database")]
-    PrimaryGroupNotFound(Gid),
+    NotFound,
 }
 
-/// Looks up a user account's details by its UID and associated GID.
-pub fn lookup_account_details(
-    uid: Uid,
-    gid: Gid,
-) -> Result<AccountDetails, AccountDetailsLookupError> {
+/// Looks up a user account's details by its UID.
+pub fn lookup_user_details_by_uid(uid: Uid) -> Result<UserDetails, UserDetailsLookupError> {
     let entry = match unistd::User::from_uid(uid) {
         Ok(Some(x)) => x,
-        Ok(None) => return Err(AccountDetailsLookupError::UserNotFound),
-        Err(err) => return Err(AccountDetailsLookupError::UserLookupError(err)),
+        Ok(None) => return Err(UserDetailsLookupError::NotFound),
+        Err(err) => return Err(UserDetailsLookupError::LookupError(err)),
     };
-
-    let grp_entry = match unistd::Group::from_gid(gid) {
-        Ok(Some(x)) => x,
-        Ok(None) => return Err(AccountDetailsLookupError::PrimaryGroupNotFound(gid)),
-        Err(err) => return Err(AccountDetailsLookupError::GroupLookupError(err)),
-    };
-
-    Ok(AccountDetails {
-        uid: uid,
-        gid: gid,
+    Ok(UserDetails {
         name: entry.name,
+        uid: uid,
+        primary_gid: entry.gid,
         home: entry.dir,
         shell: entry.shell,
-        group_name: grp_entry.name,
+    })
+}
+
+/// Contains details about a group.
+#[derive(Clone)]
+pub struct GroupDetails {
+    pub name: String,
+    pub gid: Gid,
+}
+
+#[derive(Error, Debug)]
+pub enum GroupDetailsLookupError {
+    #[error("Error looking up group database entry: {0}")]
+    LookupError(#[source] nix::Error),
+
+    #[error("Group not found in group database")]
+    NotFound,
+}
+
+/// Looks up a group's details by its GID.
+pub fn lookup_group_details_by_gid(gid: Gid) -> Result<GroupDetails, GroupDetailsLookupError> {
+    let entry = match unistd::Group::from_gid(gid) {
+        Ok(Some(x)) => x,
+        Ok(None) => return Err(GroupDetailsLookupError::NotFound),
+        Err(err) => return Err(GroupDetailsLookupError::LookupError(err)),
+    };
+    Ok(GroupDetails {
+        name: entry.name,
+        gid: gid,
     })
 }
 
@@ -652,9 +662,15 @@ mod tests {
     }
 
     #[test]
-    fn lookup_account_details() -> Result<(), super::AccountDetailsLookupError> {
-        let details = super::lookup_account_details(Uid::current(), Gid::current())?;
+    fn lookup_user_details_by_uid() -> Result<(), super::UserDetailsLookupError> {
+        let details = super::lookup_user_details_by_uid(Uid::current())?;
         assert_eq!(Uid::current(), details.uid);
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_group_details_by_uid() -> Result<(), super::GroupDetailsLookupError> {
+        let details = super::lookup_group_details_by_gid(Gid::current())?;
         assert_eq!(Gid::current(), details.gid);
         Ok(())
     }

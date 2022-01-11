@@ -17,8 +17,9 @@ pub struct Config {
     pub host_uid: Option<Uid>,
     pub host_gid: Option<Gid>,
     pub app_account: String,
+    pub app_group: String,
     pub mock_app_account_uid: Option<Uid>,
-    pub mock_app_account_gid: Option<Gid>,
+    pub mock_app_group_gid: Option<Gid>,
     pub hooks_dir: PathBuf,
     pub chown_home: bool,
     pub dry_run: bool,
@@ -66,6 +67,15 @@ pub fn load_config() -> Config {
             &|env_val| Some(String::from(env_val)),
             &|doc| doc.clone().into_string(),
         ),
+        app_group: load_config_key_or_abort(
+            "MHF_APP_GROUP",
+            &file_config,
+            "app_group",
+            false,
+            String::from(""), // default to be set in set_config_dynamic_defaults()
+            &|env_val| Some(String::from(env_val)),
+            &|doc| doc.clone().into_string(),
+        ),
         mock_app_account_uid: load_config_key_or_abort(
             "MHF_MOCK_APP_ACCOUNT_UID",
             &file_config,
@@ -75,10 +85,10 @@ pub fn load_config() -> Config {
             &parse_uid_str,
             &parse_uid_yaml,
         ),
-        mock_app_account_gid: load_config_key_or_abort(
-            "MHF_MOCK_APP_ACCOUNT_GID",
+        mock_app_group_gid: load_config_key_or_abort(
+            "MHF_MOCK_APP_GROUP_GID",
             &file_config,
-            "mock_app_account_gid",
+            "mock_app_group_gid",
             false,
             None,
             &parse_gid_str,
@@ -112,6 +122,13 @@ pub fn load_config() -> Config {
             &parse_bool_yaml,
         ),
     }
+}
+
+pub fn set_config_dynamic_defaults(mut config: Config) -> Config {
+    if config.app_group.is_empty() {
+        config.app_group = config.app_account.clone();
+    }
+    config
 }
 
 fn got_root_via_setuid_bit() -> bool {
