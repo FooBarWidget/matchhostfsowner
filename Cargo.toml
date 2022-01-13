@@ -1,6 +1,6 @@
 [package]
 name = "matchhostfsowner"
-version = "0.9.6"
+version = "0.9.7"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
 edition = "2021"
 
