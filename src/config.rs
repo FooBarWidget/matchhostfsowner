@@ -131,6 +131,24 @@ pub fn set_config_dynamic_defaults(mut config: Config) -> Config {
     config
 }
 
+pub fn sanity_check_config(config: &Config) {
+    fn format<T: std::fmt::Display>(opt: Option<T>) -> String {
+        match opt {
+            Some(val) => format!("{}", val),
+            None => String::from("<no value>"),
+        }
+    }
+
+    if config.host_uid.is_some() != config.host_gid.is_some() {
+        abort!(
+            "Configuration error: MHF_HOST_UID (set to '{}') and MHF_HOST_GID (set to '{}') \
+             must both be given, or neither must be given.",
+            format(config.host_uid),
+            format(config.host_gid),
+        );
+    }
+}
+
 fn got_root_via_setuid_bit() -> bool {
     unistd::geteuid().is_root() && !unistd::getuid().is_root()
 }

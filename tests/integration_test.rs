@@ -181,6 +181,38 @@ fn test_match_user_root_group() -> Result<(), Box<dyn error::Error>> {
 }
 
 #[test]
+fn test_host_uid_given_host_gid_not_given() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN addgroup --gid 1234 app",
+        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+    ])?;
+    let output = run_container(&image, &["-e", "MHF_HOST_UID=1300"], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "MHF_HOST_UID (set to '1300') and MHF_HOST_GID (set to '<no value>') \
+         must both be given, or neither must be given"
+    );
+    assert!(!output.status.success());
+    Ok(())
+}
+
+#[test]
+fn test_host_uid_not_given_host_gid_given() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN addgroup --gid 1234 app",
+        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+    ])?;
+    let output = run_container(&image, &["-e", "MHF_HOST_GID=1300"], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "MHF_HOST_UID (set to '<no value>') and MHF_HOST_GID (set to '1300') \
+         must both be given, or neither must be given"
+    );
+    assert!(!output.status.success());
+    Ok(())
+}
+
+#[test]
 fn test_match_user_conflicting_user() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN addgroup --gid 1234 app",

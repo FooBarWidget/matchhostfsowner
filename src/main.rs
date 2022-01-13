@@ -4,7 +4,7 @@ mod simple_logger;
 mod system_calls;
 mod utils;
 
-use config::{load_config, set_config_dynamic_defaults, Config};
+use config::{load_config, sanity_check_config, set_config_dynamic_defaults, Config};
 use libc;
 use log::{debug, error, info, trace, warn, Level};
 use nix::unistd::{self, Gid, Uid};
@@ -907,6 +907,7 @@ fn main() {
     check_running_allowed();
     let config = load_config();
     let config = set_config_dynamic_defaults(config);
+    sanity_check_config(&config);
     reconfigure_logger(&config);
     debug_print_process_privileges();
     drop_setuid_root_bit_on_self_exe_if_necessary();
