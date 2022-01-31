@@ -1,6 +1,6 @@
 [package]
 name = "matchhostfsowner"
-version = "0.9.7"
+version = "0.9.8"
 authors = ["Hongli Lai <honglilai@gmail.com>"]
 edition = "2021"
 
@@ -12,7 +12,7 @@ incremental = false
 panic = "abort"
 
 [dependencies]
-yaml-rust = "^0.4"
+yaml-rust = "^0.4.5"
 chrono = "^0.4.0"
 colored = "^1.6"
 log = { version = "^0.4.6", features = ["std"] }
