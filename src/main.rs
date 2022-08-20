@@ -33,7 +33,7 @@ fn set_path_to_safe_default() -> Option<OsString> {
     return old_path;
 }
 
-// Since matchhostfsowner is supposed to be run with the setuid root biit,
+// Since matchhostfsowner is supposed to be run with the setuid root bit,
 // we must only allow it to be run in very specific circumstances
 // that are deemed safe.
 fn check_running_allowed() {
