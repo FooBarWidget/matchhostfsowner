@@ -104,7 +104,9 @@ Example:
 ~~~dockerfile
 FROM ubuntu:22.04
 
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.8/matchhostfsowner-0.9.8-x86_64-linux.gz /sbin/matchhostfsowner.gz
+# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# See https://github.com/FooBarWidget/matchhostfsowner/releases
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
 RUN gunzip /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
@@ -186,7 +188,9 @@ Example:
 ~~~dockerfile
 FROM ubuntu:22.04
 
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.8/matchhostfsowner-0.9.8-x86_64-linux.gz /sbin/matchhostfsowner.gz
+# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# See https://github.com/FooBarWidget/matchhostfsowner/releases
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
 RUN gunzip /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x /sbin/matchhostfsowner
@@ -342,8 +346,9 @@ You can combine it with MatchHostFsOwner like this:
 ~~~dockerfile
 FROM ubuntu:22.04
 
-# Install MatchHostFsOwner
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.8/matchhostfsowner-0.9.8-x86_64-linux.gz /sbin/matchhostfsowner.gz
+# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# See https://github.com/FooBarWidget/matchhostfsowner/releases
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
 RUN gunzip /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
@@ -386,8 +391,9 @@ You can combine it with MatchHostFsOwner like this:
 ~~~dockerfile
 FROM ubuntu:22.04
 
-# Install MatchHostFsOwner
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.8/matchhostfsowner-0.9.8-x86_64-linux.gz /sbin/matchhostfsowner.gz
+# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# See https://github.com/FooBarWidget/matchhostfsowner/releases
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
 RUN gunzip /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
@@ -442,8 +448,9 @@ Let's convert this example into one that uses hooks:
 ~~~dockerfile
 FROM ubuntu:22.04
 
-# Install MatchHostFsOwner
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v0.9.8/matchhostfsowner-0.9.8-x86_64-linux.gz /sbin/matchhostfsowner.gz
+# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# See https://github.com/FooBarWidget/matchhostfsowner/releases
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
 RUN gunzip /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
@@ -459,7 +466,7 @@ ENTRYPOINT ["/sbin/matchhostfsowner"]
 CMD ["touch", "/host/foo.txt"]
 ~~~
 
-my_entrypoint.sh also needs some changes. That script executes the next command, but MatchHostFsOwner will run it without any arguments. So we need to change it to this:
+my_entrypoint.sh also needs some changes. That script executes the next command, but MatchHostFsOwner will run it without any arguments. So we change it to this:
 
 ~~~bash
 #!/usr/bin/env sh
@@ -469,6 +476,8 @@ echo "Hello world from hook"
 ## Special considerations
 
 ### Security of setuid root bit
+
+> See also the [Security notes](SECURITY-NOTES.md)
 
 In usage mode 1, MatchHostFsOwner requires the setuid root bit. How secure is this?
 

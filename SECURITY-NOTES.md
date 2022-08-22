@@ -1,6 +1,6 @@
 # Security notes
 
-Since `matchhostfsowner` is supposed to run as setuid root, it should be very careful lest it introduces security vulnerabilities.
+Since MatchHostFsOwner is supposed to run as setuid root, it should be very careful lest it introduces security vulnerabilities.
 
 Do not trust any user input. This does not only mean data read via stdin, but also environment variables and command line arguments. In particular, environment variables and CLI arguments can refer to arbitrary files. Here are some known caveats:
 
@@ -10,4 +10,4 @@ Do not trust any user input. This does not only mean data read via stdin, but al
  * The referenced file may be inside a directory that the caller controls. Even if you solve the previous issue by opening with `O_NOFOLLOW`, the caller can still perform a TOCTU attack by replacing one of the parent directories with a symlink.
  * The referenced file may be a FIFO file. The caller can trick your program into opening a FIFO file that is never opened on the other side, causing your program to get stuck forever. You should open files with `O_NONBLOCK` to defeat this.
 
-Since `matchhostfsowner` is supposed to be used in a container context, we can enforce certain usage styles that are less acceptable outside such a context. For example, we insist on a hardcoded config file location so that callers can't attack us with malicious symlinks or content.
+Since MatchHostFsOwner is supposed to be used in a container context, we can enforce certain usage styles that are less acceptable outside such a context. For example, we insist on a hardcoded config file location so that callers can't attack us with malicious symlinks or content.

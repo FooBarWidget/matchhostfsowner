@@ -1,6 +1,11 @@
 name: Rust
 
-on: [push]
+on:
+  push:
+    paths-ignore:
+      - '*.md'
+      - '*.png'
+      - '*.jpg'
 
 jobs:
   build:
