@@ -31,6 +31,7 @@ MatchHostFsOwner solves [the Docker host filesystem owner matching problem](http
       - [Wrapping MatchHostFsOwner around other entrypoint programs](#wrapping-matchhostfsowner-around-other-entrypoint-programs)
       - [Wrapping other entrypoint programs around MatchHostFsOwner](#wrapping-other-entrypoint-programs-around-matchhostfsowner)
     - [Hooks](#hooks)
+      - [Don't hardcode app account name or home directory!](#dont-hardcode-app-account-name-or-home-directory)
  - [Special considerations](#special-considerations)
     - [Security of setuid root bit](#security-of-setuid-root-bit)
     - [Chowning of home directory](#chowning-of-home-directory)
@@ -69,9 +70,11 @@ Core concepts to understand:
 
  - **It requires host user input** — when starting a container, the host user must tell MatchHostFsOwner what the host user's UID/GID is. How exactly the user passes this information depends on what tool the user uses to start the container (e.g. Docker CLI, Docker Compose, Kubernetes, etc).
 
- - **It requires a user account in the container** — MatchHostFsOwner executes the next command under a specific user account in the container. It won't create that account for you — you have to supply it. During container start, this account's UID/GID is modified so that it matches the host user's.
+ - **It requires an extra user account in the container** — MatchHostFsOwner tries to execute the next command under a user account in the container whose UID equals the host user's UID. If no such account exists (which is common) then MatchHostFsOwner will take a specific account and modify its UID/GID to match that of the host user.
 
-   By default, MatchHostFsOwner assumes that it should use an account named `app`. But this is [customizable](#custom-usergroup-account-name).
+   The account that MatchHostFsOwner will take and modify is called the **"app account"**. MatchHostFsOwner won't create this account for you — you have to supply it. It won't always be used, but often it will.
+
+   By default, MatchHostFsOwner assumes that the app account is named `app`. But this is [customizable](#custom-usergroup-account-name).
 
  - **It requires root privileges** — MatchHostFsOwner itself requires root privileges in order to modify the container's environment. These privileges will be dropped later, before executing the next command.
 
@@ -471,6 +474,28 @@ my_entrypoint.sh also needs some changes. That script executes the next command,
 ~~~bash
 #!/usr/bin/env sh
 echo "Hello world from hook"
+~~~
+
+### Don't hardcode app account name or home directory!
+
+Don't hardcode the app account's name or home directory inside hooks. Use the above environment variables instead. MatchHostFsOwner isn't guaranteed to use the app account even if it usually will.
+
+Don't do this:
+
+~~~bash
+#!/usr/bin/env sh
+set -e
+chown app: /some/file
+touch /home/app/foo
+~~~
+
+Do this instead:
+
+~~~bash
+#!/usr/bin/env sh
+set -e
+chown "$MHF_HOST_USER": /some/file
+touch "$MHF_HOST_HOME/foo"
 ~~~
 
 ## Special considerations
