@@ -14,6 +14,8 @@ use std::{env, fs, io, io::Write, path::Path, path::PathBuf, process, result::Re
 use thiserror::Error;
 use utils::{GroupDetails, GroupDetailsLookupError, UserDetails, UserDetailsLookupError};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn initialize_logger() {
     simple_logger::init_with_level(Level::Info).unwrap_or_else(|err| {
         eprintln!("*** ERROR initializing logger: {}", err);
@@ -141,7 +143,8 @@ fn reconfigure_logger(config: &Config) {
     debug!("Configuration: {:#?}", config);
 }
 
-fn debug_print_process_privileges() {
+fn debug_print_version_and_environment_info() {
+    debug!("matchhostfsowner version {}", VERSION);
     debug!(
         "Current process's privileges: uid={} gid={} euid={} egid={}",
         unistd::getuid(),
@@ -909,7 +912,7 @@ fn main() {
     let config = set_config_dynamic_defaults(config);
     sanity_check_config(&config);
     reconfigure_logger(&config);
-    debug_print_process_privileges();
+    debug_print_version_and_environment_info();
     drop_setuid_root_bit_on_self_exe_if_necessary();
 
     let mut using_app_account = false;
