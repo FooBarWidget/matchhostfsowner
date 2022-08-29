@@ -447,7 +447,7 @@ mod tests {
                 if uid.as_raw() <= 5 {
                     Ok(Some(User::from_uid(Uid::current()).unwrap().unwrap()))
                 } else {
-                    Err(nix::Error::UnsupportedOperation)
+                    Err(nix::Error::EOPNOTSUPP)
                 }
             }
         }
@@ -525,7 +525,7 @@ mod tests {
                 if gid.as_raw() <= 5 {
                     Ok(Some(Group::from_gid(Gid::current()).unwrap().unwrap()))
                 } else {
-                    Err(nix::Error::UnsupportedOperation)
+                    Err(nix::Error::EOPNOTSUPP)
                 }
             }
         }
