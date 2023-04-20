@@ -58,31 +58,31 @@ There are various strategies to solve this problem, but they are all either non-
 MatchHostFsOwner implements solution strategy number 1 [described in the article](https://www.joyfulbikeshedding.com/blog/2021-03-15-docker-and-the-host-filesystem-owner-matching-problem.html). It ensures that the container runs as the same user (UID/GID) as the host's user. In short, it:
 
  1. ...modifies a user account inside the container so that the account's UID/GID matches that of the host user.
- 2. ...executes the actual container command as the aforementioned user account (instead of, e.g. letting it execute as root).
+ 2. ...executes the actual container command as the aforementioned user account (instead of, e.g., letting it execute as root).
 
-This strategy is easier said than done, and the many caveats involved with this strategy are documented in the article. Fortunately, MatchHostFsOwner is here to help, because it addresses all these caveats so that you don't have to.
+This strategy is easier said than done, and the article documents the many caveats involved with this strategy. Fortunately, MatchHostFsOwner is here to help because it addresses all these caveats, so you don't have to.
 
 ## Basic usage
 
 Core concepts to understand:
 
- - **It's an entrypoint** — MatchHostFsOwner is to be used as a container entrypoint program. It [should be the first program to run in the container](#combining-other-entrypoint-programs-with-matchhostfsowner). When it runs, it makes modifications to the container's environment, then executes the next command with the proper UID/GID.
+ - **It's an entrypoint** — Install MatchHostFsOwner as the container entrypoint program. It [should be the first program to run in the container](#combining-other-entrypoint-programs-with-matchhostfsowner). When it runs, modifies the container's environment, then executes the next command with the proper UID/GID.
 
- - **It requires host user input** — when starting a container, the host user must tell MatchHostFsOwner what the host user's UID/GID is. How exactly the user passes this information depends on what tool the user uses to start the container (e.g. Docker CLI, Docker Compose, Kubernetes, etc).
+ - **It requires host user input** — when starting a container, the host user must tell MatchHostFsOwner what the host user's UID/GID is. How the user passes this information depends on what tool the user uses to start the container (e.g., Docker CLI, Docker Compose, Kubernetes, etc).
 
- - **It requires an extra user account in the container** — MatchHostFsOwner tries to execute the next command under a user account in the container whose UID equals the host user's UID. If no such account exists (which is common) then MatchHostFsOwner will take a specific account and modify its UID/GID to match that of the host user.
+ - **It requires an extra user account in the container** — MatchHostFsOwner tries to execute the next command under a user account in the container whose UID equals the host user's UID. If no such account exists (which is common), then MatchHostFsOwner will take a specific account and modify its UID/GID to match that of the host user.
 
-   The account that MatchHostFsOwner will take and modify is called the **"app account"**. MatchHostFsOwner won't create this account for you — you have to supply it. It won't always be used, but often it will.
+   The account MatchHostFsOwner will take and modify is called the **"app account"**. MatchHostFsOwner won't create this account for you — you have to supply it. It won't always be used, but often it will.
 
    By default, MatchHostFsOwner assumes that the app account is named `app`. But this is [customizable](#custom-usergroup-account-name).
 
- - **It requires root privileges** — MatchHostFsOwner itself requires root privileges in order to modify the container's environment. These privileges will be dropped later, before executing the next command.
+ - **It requires root privileges** — MatchHostFsOwner itself requires root privileges to modify the container's environment. It drops these privileges later before executing the next command.
 
-   How exactly MatchHostFsOwner is granted root privileges, depends on how one is supposed to start the container. This brings us to the two _usage modes_.
+   How exactly MatchHostFsOwner is granted root privileges depends on how one is supposed to start the container. This brings us to the two _usage modes_.
 
 ### Usage mode 1: start container without root privileges
 
-This mode is most suitable if you want to start the container without root privileges. For example:
+This mode is most suitable for starting the container without root privileges. For example:
 
  - When your Dockerfile sets a default user account using `USER`.
  - When your container is supposed to be started with `docker run --user`.
@@ -92,15 +92,15 @@ In this mode, you must grant MatchHostFsOwner the setuid root bit. MatchHostFsOw
 
 Limitations of this mode:
 
- - The container cannot be started a second time (e.g. using `docker stop` and then `docker start`). Upon starting the container for the second time, MatchHostFsOwner no longer has the setuid root bit, and so it won't be able to do its job. Thus, mode 1 is only useful for ephemeral containers.
- - Incompatible with Docker Compose, because it may start the container a second time.
- - Requires that the container filesystem in which MatchHostFsOwner is located, to be writable. Because MatchHostFsOwner must be able to drop the setuid root bit. Thus, the container may not be run in read-only mode (e.g. `docker run --read-only`).
+ - The container cannot be started a second time (e.g., using `docker stop` and then `docker start`). Upon starting the container for the second time, MatchHostFsOwner no longer has the setuid root bit, so it won't be able to do its job. Thus, mode 1 is only useful for ephemeral containers.
+ - Incompatible with Docker Compose because it may start the container a second time.
+ - Requires that the container filesystem in which MatchHostFsOwner is located, to be writable. Because MatchHostFsOwner must be able to drop the setuid root bit. Thus, you cannot run the container in read-only mode (e.g., `docker run --read-only`).
 
 #### Container image build instructions
 
  1. Create an account named `app` in your container. Set it up as the default account for the container. [A different account name is also possible](#custom-usergroup-account-name).
- 2. Place the MatchHostFsOwner executable in a root-owned directory (e.g. `/sbin`) and ensure that the executable is owned by root, and has the setuid root bit.
- 3. Setup the MatchHostFsOwner executable as the container entrypoint.
+ 2. Place the MatchHostFsOwner executable in a root-owned directory (e.g., `/sbin`) and ensure that the executable is owned by root, and has the setuid root bit.
+ 3. Set up the MatchHostFsOwner executable as the container entrypoint.
 
 Example:
 
@@ -176,14 +176,14 @@ In this mode, MatchHostFsOwner obtains root privileges through the fact that one
 This mode is most suitable if any of the following is applicable:
 
  - You're using Docker Compose.
- - The container could be started a second time, as happens with e.g. Docker Compose.
+ - The container could be started a second time, as happens with, e.g., Docker Compose.
  - The container filesystem in which MatchHostFsOwner is located is read-only.
 
 #### Container image build instructions
 
  1. Create an account named `app` in your container. [A different account name is also possible](#custom-usergroup-account-name).
- 2. Place the MatchHostFsOwner executable in a root-owned directory (e.g. `/sbin`) and ensure that the executable is owned by root.
- 3. Setup the MatchHostFsOwner executable as the container entrypoint.
+ 2. Place the MatchHostFsOwner executable in a root-owned directory (e.g., `/sbin`) and ensure that the executable is owned by root.
+ 3. Set up the MatchHostFsOwner executable as the container entrypoint.
  4. **Don't** set a default user account with `USER`.
 
 Example:
@@ -419,8 +419,8 @@ A hook is any executable file in the container inside `/etc/matchhostfsowner/hoo
 
 The following environment variables are passed to hooks:
 
- * `MHF_HOST_UID` — the host user's UID, i.e. the UID of the container user account that we will use.
- * `MHF_HOST_GID` — the host user's GID, i.e. the GID of the container group account that we will use.
+ * `MHF_HOST_UID` — the host user's UID, i.e., the UID of the container user account that we will use.
+ * `MHF_HOST_GID` — the host user's GID, i.e., the GID of the container group account that we will use.
  * `MHF_HOST_USER` — the name of the container user account that we will use.
  * `MHF_HOST_GROUP` — the name of the container group account that we will use.
  * `MHF_HOST_HOME` — the home directory of the container user account that we will use.
