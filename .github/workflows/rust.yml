@@ -10,11 +10,11 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/checkout@v2
-    - uses: actions/cache@v2
+    - uses: actions/checkout@v3
+    - uses: actions/cache@v3
       with:
         path: |
           ~/.cargo/bin/
@@ -25,7 +25,14 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
     - name: Build
       run: cargo build --color=always --verbose
-    - name: Build integration test base
-      run: make integration-test-base
+    - uses: docker/setup-buildx-action@v2
+    - uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: Dockerfile.integration-test-base
+        tags: matchhostfsowner-integration-test-base
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        load: true
     - name: Run tests
       run: cargo test --color=always --verbose

@@ -44,4 +44,4 @@ target/docker-helper/matchhostfsowner:
 	chmod +x target/docker-helper/matchhostfsowner
 
 integration-test-base:
-	docker build -t matchhostfsowner-integration-test-base -f Dockerfile.integration-test-base .
+	env DOCKER_BUILDKIT=1 docker build -t matchhostfsowner-integration-test-base -f Dockerfile.integration-test-base .

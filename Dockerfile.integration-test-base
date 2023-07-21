@@ -1,22 +1,20 @@
-FROM lukemathwalker/cargo-chef AS planner
-WORKDIR app
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
-
-FROM lukemathwalker/cargo-chef AS cacher
-WORKDIR app
-COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
-
 FROM rust:1.57-slim-buster AS builder
 WORKDIR app
-COPY Cargo.toml .
-COPY Cargo.lock .
+COPY Cargo.toml Cargo.lock .
+
+# Build dependencies with cache
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    mkdir src && \
+    echo "fn main() {println!(\"if you see this, the build broke\")}" > src/main.rs && \
+    cargo build && \
+    rm -rf src
+
+# Now build our own sources, also with cache
 COPY src src
-# Copy over the cached dependencies
-COPY --from=cacher /app/target target
-COPY --from=cacher $CARGO_HOME $CARGO_HOME
-RUN cargo build
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    touch src/main.rs && \
+    cargo build
+
 
 FROM debian:buster-slim
 COPY --from=builder /app/target/debug/matchhostfsowner /sbin/matchhostfsowner
