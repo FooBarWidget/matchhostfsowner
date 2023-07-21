@@ -252,6 +252,28 @@ fn test_match_user_conflicting_group() -> Result<(), Box<dyn error::Error>> {
     Ok(())
 }
 
+// https://github.com/FooBarWidget/matchhostfsowner/issues/11
+#[test]
+fn test_match_app_account_primary_gid_when_mitigating_conflicting_group(
+) -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN addgroup --gid 1234 app",
+        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+    ])?;
+    let output = run_container(
+        &image,
+        &["-e", "MHF_HOST_UID=1300", "-e", "MHF_HOST_GID=1"],
+        &["id", "app"],
+    )?;
+    assert_contains_substr!(
+        output.text,
+        "Account to switch to is 'app' (UID/GID = 1300:1,"
+    );
+    assert_contains_substr!(output.text, "uid=1300(app) gid=1(app) groups=1(app)\n");
+    assert_eq!(Some(0), output.status.code);
+    Ok(())
+}
+
 #[test]
 fn test_match_user_via_docker_cli_user_arg() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[

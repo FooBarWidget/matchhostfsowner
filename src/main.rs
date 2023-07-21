@@ -359,7 +359,10 @@ fn modify_etc_passwd(
     let content =
         fs::read("/etc/passwd").map_err(|err| AccountModifyError::PasswdReadError(err))?;
     let result = utils::modify_etc_passwd_contents(content.as_slice(), modifier);
-    if dry_run {
+
+    if content == result {
+        debug!("No changes need to be made to /etc/passwd.");
+    } else if dry_run {
         info!("Dry-run mode on, so not actually modifying /etc/passwd.");
         trace!(
             "But would otherwise have modified it to:\n\
@@ -411,7 +414,10 @@ fn modify_group_gid(config: &Config, old_gid: Gid, new_gid: Gid) -> Result<(), A
             columns[2] = new_gid.to_string().as_bytes().to_vec();
         }
     });
-    if config.dry_run {
+
+    if content == result {
+        debug!("No changes need to be made to /etc/group.");
+    } else if config.dry_run {
         info!("Dry-run mode on, so not actually modifying /etc/group.");
         trace!(
             "But would otherwise have modified it to:\n\
@@ -924,6 +930,26 @@ fn main() {
     sanity_check_app_group_details(&config, &app_group_details);
     embrace_setuid_bit_privileges_if_provided();
 
+    if host_gid.as_raw() == 0 {
+        debug!(
+            "Host account GID ({}) is the root group. Not modifying '{}' group.",
+            host_gid, config.app_group,
+        );
+    } else if host_gid == app_group_details.gid {
+        debug!(
+            "Host account GID ({}) equals '{}' group's GID ({}). Not modifying '{}' group.",
+            host_gid, config.app_group, app_group_details.gid, config.app_group,
+        );
+    } else {
+        debug!(
+            "Intending to change '{}' group's GID from {} to {}.",
+            config.app_group, app_group_details.gid, host_gid
+        );
+        ensure_no_group_already_using_host_gid(&config, host_gid);
+        ensure_app_group_has_host_gid(&config, &app_group_details, host_gid);
+        using_app_group = true;
+    }
+
     if host_uid.is_root() {
         debug!(
             "Host account UID ({}) is root. Not modifying '{}' account.",
@@ -946,26 +972,6 @@ fn main() {
         ensure_no_account_already_using_host_uid(&config, host_uid);
         ensure_app_account_has_host_uid_and_gid(&config, &app_account_details, host_uid, host_gid);
         using_app_account = true;
-    }
-
-    if host_gid.as_raw() == 0 {
-        debug!(
-            "Host account GID ({}) is the root group. Not modifying '{}' group.",
-            host_gid, config.app_group,
-        );
-    } else if host_gid == app_group_details.gid {
-        debug!(
-            "Host account GID ({}) equals '{}' group's GID ({}). Not modifying '{}' group.",
-            host_gid, config.app_group, app_group_details.gid, config.app_group,
-        );
-    } else {
-        debug!(
-            "Intending to change '{}' group's GID from {} to {}.",
-            config.app_group, app_group_details.gid, host_gid
-        );
-        ensure_no_group_already_using_host_gid(&config, host_gid);
-        ensure_app_group_has_host_gid(&config, &app_group_details, host_gid);
-        using_app_group = true;
     }
 
     // The information in here is now stale, so make sure
