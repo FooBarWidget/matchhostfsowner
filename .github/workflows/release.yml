@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build (release) for ${{ matrix.target }}
+        run: cargo build --release --target "${{ matrix.target }}" --verbose
+
+      - name: Resolve package name
+        id: pkg
+        run: |
+          PKG_NAME=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].name')
+          echo "pkg_name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Package artifact
+        run: |
+          set -euo pipefail
+          PKG=${{ steps.pkg.outputs.pkg_name }}
+          TGT=${{ matrix.target }}
+          TAG=${{ github.ref_name }}
+          BIN_PATH="target/${TGT}/release/${PKG}"
+          if [ ! -x "$BIN_PATH" ]; then
+            echo "Expected binary not found at $BIN_PATH"
+            ls -la "target/${TGT}/release" || true
+            exit 1
+          fi
+          ARCHIVE="${PKG}-${TAG}-${TGT}.tar.gz"
+          mkdir -p dist
+          tar -czf "dist/${ARCHIVE}" \
+            -C "target/${TGT}/release" "${PKG}"
+          echo "Created dist/${ARCHIVE}"
+          shasum -a 256 "dist/${ARCHIVE}" > "dist/${ARCHIVE}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  create_release:
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+
+      - name: Check gh CLI and auth
+        run: |
+          gh --version
+          gh auth status
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create or update draft release with gh
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" --draft --generate-notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets to release
+        run: |
+          set -euo pipefail
+          find dist-all -type f -name '*.tar.gz' -o -name '*.sha256' | sort > files.txt
+          xargs -a files.txt -r gh release upload "${{ github.ref_name }}" --clobber
+          echo "Uploaded:"
+          cat files.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
