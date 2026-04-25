@@ -9,7 +9,7 @@ use std::option::Option;
 use std::path::PathBuf;
 use std::process;
 use std::result::Result;
-use yaml_rust::{Yaml, YamlLoader};
+use yaml_rust2::{Yaml, YamlLoader};
 
 #[derive(Debug)]
 pub struct Config {
@@ -372,4 +372,81 @@ fn parse_path_str(val: &str) -> Option<PathBuf> {
 
 fn parse_path_yaml(doc: &Yaml) -> Option<PathBuf> {
     doc.clone().into_string().map(|s| PathBuf::from(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_ENV_KEY: &str = "MHF_TEST_ENV_KEY_EXPECTED_TO_BE_UNSET_DURING_CONFIG_TESTS";
+
+    fn parse_yaml_document(input: &str) -> Yaml {
+        let documents = YamlLoader::load_from_str(input).unwrap();
+        assert_eq!(1, documents.len());
+        documents[0].clone()
+    }
+
+    #[test]
+    fn load_config_key_uses_default_for_missing_yaml_key() {
+        let config_file = parse_yaml_document("{}");
+
+        let result = load_config_key(
+            TEST_ENV_KEY,
+            &config_file,
+            "chown_home",
+            true,
+            true,
+            &parse_bool_str,
+            &parse_bool_yaml,
+        );
+
+        assert!(matches!(result, Ok(true)));
+    }
+
+    #[test]
+    fn load_config_key_parses_uid_from_yaml_integer() {
+        let config_file = parse_yaml_document("host_uid: 1234");
+
+        let result = load_config_key(
+            TEST_ENV_KEY,
+            &config_file,
+            "host_uid",
+            false,
+            None,
+            &parse_uid_str,
+            &parse_uid_yaml,
+        );
+
+        assert!(matches!(result, Ok(Some(uid)) if uid == Uid::from_raw(1234)));
+    }
+
+    #[test]
+    fn load_config_key_rejects_invalid_yaml_value_type() {
+        let config_file = parse_yaml_document("chown_home: maybe");
+
+        let result = load_config_key(
+            TEST_ENV_KEY,
+            &config_file,
+            "chown_home",
+            true,
+            true,
+            &parse_bool_str,
+            &parse_bool_yaml,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ConfigLoadError::ConfigFileInvalidValue("chown_home", _))
+        ));
+    }
+
+    #[test]
+    fn parse_path_yaml_reads_string_values() {
+        let config_file = parse_yaml_document("hooks_dir: /tmp/hooks.d");
+
+        assert_eq!(
+            Some(PathBuf::from("/tmp/hooks.d")),
+            parse_path_yaml(&config_file["hooks_dir"])
+        );
+    }
 }
