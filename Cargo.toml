@@ -16,12 +16,12 @@ yaml-rust2 = "^0.11.0"
 chrono = "^0.4.0"
 colored = "^3.1.1"
 log = { version = "^0.4.6", features = ["std"] }
-nix = "^0.25.0"
-thiserror = "^1.0.24"
+nix = { version = "^0.31.2", features = ["user", "process"] }
+thiserror = "^2.0.18"
 libc = "^0.2"
 shell-escape = "^0.1.5"
 
 [dev-dependencies]
 tempfile = "3"
-more-asserts = "^0.2.1"
+more-asserts = "^0.3.1"
 regex = "^1.0"
