@@ -186,6 +186,8 @@ pub fn run_container(
         .arg("docker")
         .arg("run")
         .arg("--rm")
+        .arg("--pull")
+        .arg("never")
         .arg("-e")
         .arg("MHF_LOG_LEVEL=debug");
     for &arg in docker_args {
@@ -322,11 +324,12 @@ pub fn wait_container_and_capture_output(
         };
         match output_text.parse::<i32>() {
             Ok(x) => x,
-            Err(_) =>
+            Err(_) => {
                 return Err(GenericError::new_boxed(format!(
                     "Error waiting for container: 'docker wait' did not output a parseable exit code ('{}')",
                     output_text,
-                ))),
+                )));
+            }
         }
     };
 

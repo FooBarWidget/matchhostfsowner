@@ -332,7 +332,7 @@ mod tests {
     use super::super::system_calls::SystemCalls;
     use more_asserts::*;
     use nix::unistd::{Gid, Group, Uid, User};
-    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::{fs, fs::File, io, path::Path, thread, time::Duration};
     use tempfile::tempdir;
 
@@ -371,7 +371,7 @@ mod tests {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "link is supposed to be broken",
-                ))
+                ));
             }
             Err(super::ReadLinkError::CommandFailed(status)) => {
                 assert!(!status.success(), "reading link fails")

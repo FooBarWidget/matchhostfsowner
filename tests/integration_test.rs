@@ -7,8 +7,8 @@ use std::error;
 #[test]
 fn test_running_allowed_when_having_normal_root_privileges() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &[], &[])?;
     assert_contains_substr!(
@@ -20,12 +20,12 @@ fn test_running_allowed_when_having_normal_root_privileges() -> Result<(), Box<d
 }
 
 #[test]
-fn test_running_allowed_when_having_normal_and_setuid_root_privileges(
-) -> Result<(), Box<dyn error::Error>> {
+fn test_running_allowed_when_having_normal_and_setuid_root_privileges()
+-> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN chmod u+s,g+s /sbin/matchhostfsowner",
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &[], &[])?;
     assert_contains_substr!(
@@ -40,8 +40,8 @@ fn test_running_allowed_when_having_normal_and_setuid_root_privileges(
 fn test_running_allowed_when_setuid_root_and_pid1() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN chmod u+s,g+s /sbin/matchhostfsowner",
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &["--user", "1234:1234"], &[])?;
     assert_contains_substr!(
@@ -53,12 +53,12 @@ fn test_running_allowed_when_setuid_root_and_pid1() -> Result<(), Box<dyn error:
 }
 
 #[test]
-fn test_running_allowed_when_setuid_root_and_child_of_docker_init(
-) -> Result<(), Box<dyn error::Error>> {
+fn test_running_allowed_when_setuid_root_and_child_of_docker_init()
+-> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN chmod u+s,g+s /sbin/matchhostfsowner",
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &["--init", "--user", "1234:1234"], &[])?;
     assert_contains_substr!(
@@ -70,12 +70,12 @@ fn test_running_allowed_when_setuid_root_and_child_of_docker_init(
 }
 
 #[test]
-fn test_running_not_allowed_when_setuid_root_and_not_pid1_and_not_child_of_docker_init(
-) -> Result<(), Box<dyn error::Error>> {
+fn test_running_not_allowed_when_setuid_root_and_not_pid1_and_not_child_of_docker_init()
+-> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN chmod u+s,g+s /sbin/matchhostfsowner",
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -94,8 +94,8 @@ fn test_running_not_allowed_when_setuid_root_and_not_pid1_and_not_child_of_docke
 #[test]
 fn test_running_not_allowed_when_no_root_privileges() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &["--user", "1234:1234"], &[])?;
     assert_contains_substr!(
@@ -111,15 +111,18 @@ fn test_running_not_allowed_when_no_root_privileges() -> Result<(), Box<dyn erro
 fn test_drop_setuid_bit_on_own_exe() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN chmod u+s,g+s /sbin/matchhostfsowner",
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
         &["--user", "1234:1234"],
         &["stat", "/sbin/matchhostfsowner"],
     )?;
-    assert_contains_substr!(output.text, "Dropping setuid bit on /sbin/matchhostfsowner");
+    assert_contains_substr!(
+        output.text,
+        "Dropping setuid bit on /usr/sbin/matchhostfsowner"
+    );
     assert!(output.text.find("Access: (0755/-rwxr-xr-x)").is_some());
     assert_eq!(Some(0), output.status.code);
     Ok(())
@@ -128,8 +131,8 @@ fn test_drop_setuid_bit_on_own_exe() -> Result<(), Box<dyn error::Error>> {
 #[test]
 fn test_match_user_non_root() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -147,8 +150,8 @@ fn test_match_user_non_root() -> Result<(), Box<dyn error::Error>> {
 #[test]
 fn test_match_user_root_user() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -165,8 +168,8 @@ fn test_match_user_root_user() -> Result<(), Box<dyn error::Error>> {
 #[test]
 fn test_match_user_root_group() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -183,8 +186,8 @@ fn test_match_user_root_group() -> Result<(), Box<dyn error::Error>> {
 #[test]
 fn test_host_uid_given_host_gid_not_given() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &["-e", "MHF_HOST_UID=1300"], &["id"])?;
     assert_contains_substr!(
@@ -199,8 +202,8 @@ fn test_host_uid_given_host_gid_not_given() -> Result<(), Box<dyn error::Error>>
 #[test]
 fn test_host_uid_not_given_host_gid_given() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &["-e", "MHF_HOST_GID=1300"], &["id"])?;
     assert_contains_substr!(
@@ -215,8 +218,8 @@ fn test_host_uid_not_given_host_gid_given() -> Result<(), Box<dyn error::Error>>
 #[test]
 fn test_match_user_conflicting_user() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -235,8 +238,8 @@ fn test_match_user_conflicting_user() -> Result<(), Box<dyn error::Error>> {
 #[test]
 fn test_match_user_conflicting_group() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -254,11 +257,11 @@ fn test_match_user_conflicting_group() -> Result<(), Box<dyn error::Error>> {
 
 // https://github.com/FooBarWidget/matchhostfsowner/issues/11
 #[test]
-fn test_match_app_account_primary_gid_when_mitigating_conflicting_group(
-) -> Result<(), Box<dyn error::Error>> {
+fn test_match_app_account_primary_gid_when_mitigating_conflicting_group()
+-> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(
         &image,
@@ -278,8 +281,8 @@ fn test_match_app_account_primary_gid_when_mitigating_conflicting_group(
 fn test_match_user_via_docker_cli_user_arg() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN chmod u+s,g+s /sbin/matchhostfsowner",
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let output = run_container(&image, &["--user", "1300:1301"], &["id"])?;
     assert_contains_substr!(
@@ -297,8 +300,8 @@ fn test_match_user_via_docker_cli_user_arg() -> Result<(), Box<dyn error::Error>
 #[test]
 fn test_idempotent() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let container = run_restartable_container(
         &image,
@@ -324,8 +327,8 @@ fn test_idempotent() -> Result<(), Box<dyn error::Error>> {
 #[test]
 fn test_user_root_group_idempotent() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
-        "RUN addgroup --gid 1234 app",
-        "RUN adduser --uid 1234 --gid 1234 --gecos '' --disabled-password app",
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
     ])?;
     let container = run_restartable_container(
         &image,

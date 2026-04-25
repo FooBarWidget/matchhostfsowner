@@ -4,9 +4,9 @@ mod simple_logger;
 mod system_calls;
 mod utils;
 
-use config::{load_config, sanity_check_config, set_config_dynamic_defaults, Config};
+use config::{Config, load_config, sanity_check_config, set_config_dynamic_defaults};
 use libc;
-use log::{debug, error, info, trace, warn, Level};
+use log::{Level, debug, error, info, trace, warn};
 use nix::unistd::{self, Gid, Uid};
 use std::ffi::{CString, NulError, OsString};
 use std::os::unix::{ffi::OsStrExt, ffi::OsStringExt, fs::MetadataExt, fs::PermissionsExt};
@@ -28,10 +28,13 @@ fn initialize_logger() {
 // in order to prevent shelling out to malicious tools.
 fn set_path_to_safe_default() -> Option<OsString> {
     let old_path = env::var_os("PATH");
-    env::set_var(
-        "PATH",
-        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    );
+    unsafe {
+        // We don't use threads
+        env::set_var(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        );
+    }
     return old_path;
 }
 
@@ -463,21 +466,19 @@ fn ensure_no_account_already_using_host_uid(config: &Config, host_uid: Uid) {
             );
             let new_uid = match utils::find_unused_uid(host_uid) {
                 Ok(Some(uid)) => uid,
-                Ok(None) =>
-                    abort!(
-                        "Error changing conflicting account '{}': \
+                Ok(None) => abort!(
+                    "Error changing conflicting account '{}': \
                             cannot find an unused UID that's larger than {}",
-                        conflicting_account.name,
-                        host_uid
-                    ),
-                Err(err) =>
-                    abort!(
-                        "Error changing conflicting account '{}': \
+                    conflicting_account.name,
+                    host_uid
+                ),
+                Err(err) => abort!(
+                    "Error changing conflicting account '{}': \
                          an error occurred while trying to find an unused UID that's larger than {}: {}",
-                        conflicting_account.name,
-                        host_uid,
-                        err
-                    ),
+                    conflicting_account.name,
+                    host_uid,
+                    err
+                ),
             };
 
             debug!(
@@ -840,10 +841,13 @@ fn change_user(target_account_details: &UserDetails, target_group_details: &Grou
         );
     });
 
-    env::set_var("USER", &target_account_details.name);
-    env::set_var("LOGNAME", &target_account_details.name);
-    env::set_var("SHELL", &target_account_details.shell);
-    env::set_var("HOME", &target_account_details.home);
+    // We don't use threads
+    unsafe {
+        env::set_var("USER", &target_account_details.name);
+        env::set_var("LOGNAME", &target_account_details.name);
+        env::set_var("SHELL", &target_account_details.shell);
+        env::set_var("HOME", &target_account_details.home);
+    }
 }
 
 fn path_to_cstring(path: &Path) -> Result<CString, NulError> {
@@ -853,7 +857,10 @@ fn path_to_cstring(path: &Path) -> Result<CString, NulError> {
 
 fn restore_old_path(old_path: Option<OsString>) {
     if old_path.is_some() {
-        env::set_var("PATH", old_path.unwrap());
+        // We don't use threads
+        unsafe {
+            env::set_var("PATH", old_path.unwrap());
+        }
     }
 }
 
@@ -883,9 +890,12 @@ fn maybe_execute_next_command(target_account_details: &UserDetails) {
         });
         let exec_args: Vec<CString> = exec_args.collect();
 
-        unistd::execvp(&exec_args[0], &exec_args).unwrap_or_else(|err| {
-            abort!("Error executing command '{}': {}", format_args(), err);
-        });
+        match unistd::execvp(&exec_args[0], &exec_args) {
+            Ok(_) => unreachable!(),
+            Err(err) => {
+                abort!("Error executing command '{}': {}", format_args(), err);
+            }
+        }
     } else if unistd::getpid().as_raw() == 1 {
         debug!(
             "We are PID 1, and no CLI arguments provided, so executing shell: {}",
@@ -898,15 +908,20 @@ fn maybe_execute_next_command(target_account_details: &UserDetails) {
                 target_account_details.shell.display(),
             ),
         };
-        unistd::execvp(&shell.clone(), &vec![shell]).unwrap_or_else(|err| {
-            abort!(
-                "Error executing command '{}': {}",
-                target_account_details.shell.display(),
-                err
-            );
-        });
+        match unistd::execvp(&shell.clone(), &vec![shell]) {
+            Ok(_) => unreachable!(),
+            Err(err) => {
+                abort!(
+                    "Error executing command '{}': {}",
+                    target_account_details.shell.display(),
+                    err
+                );
+            }
+        }
     } else {
-        debug!("We are not PID 1, and no CLI arguments provided, so exiting without executing next command.");
+        debug!(
+            "We are not PID 1, and no CLI arguments provided, so exiting without executing next command."
+        );
     }
 }
 
