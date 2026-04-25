@@ -1,4 +1,11 @@
-use std::{error, fmt, fs::File, io, io::Write, path::Path, process, process::Command, thread};
+use std::{
+    error, fmt,
+    fs::File,
+    io::{self, Write},
+    path::Path,
+    process::{self, Command},
+    thread,
+};
 use tempfile;
 use thiserror::Error;
 
@@ -122,36 +129,99 @@ fn run_docker_build(
     dockerfile_path: &Path,
     source_path: &Path,
 ) -> Result<(), Box<dyn error::Error>> {
-    let mut command = Command::new("/bin/sh");
-    command
-        .arg("-c")
-        .arg("exec \"$@\" 2>&1")
-        .arg("docker")
-        .arg("docker")
-        .arg("build")
-        .arg("-t")
-        .arg(image_name)
-        .arg("-f")
-        .arg(dockerfile_path)
-        .arg(source_path);
-    let output = command.output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(GenericError::new_boxed(format!(
-            "Error building test image: 'docker build' exited with code {}. \
-             Output:\n\
-             -------- BEGIN OUTPUT --------\n\
-             {}\n\
-             --------- END OUTPUT ---------\n",
-            output
-                .status
-                .code()
-                .map(|c| format!("{}", c))
-                .unwrap_or(String::from("unknown")),
-            String::from_utf8_lossy(&output.stdout),
-        )))
+    const MAX_DOCKER_BUILD_ATTEMPTS: usize = 5;
+
+    let mut last_build_output = String::new();
+    let mut last_images_result = String::from("'docker images' was not run");
+
+    // Docker sometimes reports a successful build before the tag is visible to
+    // a following `docker run`, so retry until `docker images` can resolve it.
+    for attempt in 1..=MAX_DOCKER_BUILD_ATTEMPTS {
+        let mut build_command = Command::new("/bin/sh");
+        build_command
+            .arg("-c")
+            .arg("exec \"$@\" 2>&1")
+            .arg("docker")
+            .arg("docker")
+            .arg("build")
+            .arg("-t")
+            .arg(image_name)
+            .arg("-f")
+            .arg(dockerfile_path)
+            .arg(source_path);
+        let build_output = build_command.output()?;
+        last_build_output = String::from_utf8_lossy(&build_output.stdout).into_owned();
+        if !build_output.status.success() {
+            return Err(GenericError::new_boxed(format!(
+                "Error building test image: 'docker build' exited with code {} on attempt {}. \
+                 Output:\n\
+                 -------- BEGIN OUTPUT --------\n\
+                 {}\n\
+                 --------- END OUTPUT ---------\n",
+                build_output
+                    .status
+                    .code()
+                    .map(|c| format!("{}", c))
+                    .unwrap_or(String::from("unknown")),
+                attempt,
+                last_build_output,
+            )));
+        }
+
+        let mut images_command = Command::new("/bin/sh");
+        images_command
+            .arg("-c")
+            .arg("exec \"$@\" 2>&1")
+            .arg("docker")
+            .arg("docker")
+            .arg("images")
+            .arg(image_name)
+            .arg("--format")
+            .arg("{{.Repository}}:{{.Tag}}");
+        let images_output = images_command.output()?;
+        let images_stdout = String::from_utf8_lossy(&images_output.stdout).into_owned();
+        if images_output.status.success()
+            && images_stdout.lines().any(|line| line.trim() == image_name)
+        {
+            return Ok(());
+        }
+
+        last_images_result = if images_output.status.success() {
+            format!(
+                "Attempt {}: 'docker images' succeeded but did not list image {}.",
+                attempt, image_name,
+            )
+        } else {
+            format!(
+                "Attempt {}: 'docker images' exited with code {}. \
+                 Output:\n\
+                 -------- BEGIN OUTPUT --------\n\
+                 {}\n\
+                 --------- END OUTPUT ---------",
+                attempt,
+                images_output
+                    .status
+                    .code()
+                    .map(|c| format!("{}", c))
+                    .unwrap_or(String::from("unknown")),
+                strip_trailing_newline(&images_stdout),
+            )
+        };
     }
+
+    Err(GenericError::new_boxed(format!(
+        "Error building test image: 'docker build' succeeded, but the image never became \
+         visible in 'docker images' after {} attempts. \
+         Last docker build output:\n\
+         -------- BEGIN BUILD OUTPUT --------\n\
+         {}\n\
+         --------- END BUILD OUTPUT ---------\n\
+         Last docker images result:\n\
+         {}\n",
+        MAX_DOCKER_BUILD_ATTEMPTS,
+        strip_trailing_newline(&last_build_output),
+        last_images_result,
+    )))
 }
 
 pub struct ExitStatus {
