@@ -339,8 +339,14 @@ fn parse_uid_str(val: &str) -> Option<Option<Uid>> {
     }
 }
 
+fn parse_raw_id_yaml(doc: &Yaml) -> Option<u32> {
+    doc.clone()
+        .into_i64()
+        .and_then(|num| u32::try_from(num).ok())
+}
+
 fn parse_uid_yaml(doc: &Yaml) -> Option<Option<Uid>> {
-    Some(doc.clone().into_i64().map(|num| Uid::from_raw(num as u32)))
+    parse_raw_id_yaml(doc).map(|num| Some(Uid::from_raw(num)))
 }
 
 fn parse_gid_str(val: &str) -> Option<Option<Gid>> {
@@ -351,7 +357,7 @@ fn parse_gid_str(val: &str) -> Option<Option<Gid>> {
 }
 
 fn parse_gid_yaml(doc: &Yaml) -> Option<Option<Gid>> {
-    Some(doc.clone().into_i64().map(|num| Gid::from_raw(num as u32)))
+    parse_raw_id_yaml(doc).map(|num| Some(Gid::from_raw(num)))
 }
 
 pub fn parse_bool_str(val: &str) -> Option<bool> {
@@ -421,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn load_config_key_rejects_invalid_yaml_value_type() {
+    fn load_config_key_rejects_invalid_yaml_bool_value() {
         let config_file = parse_yaml_document("chown_home: maybe");
 
         let result = load_config_key(
@@ -437,6 +443,46 @@ mod tests {
         assert!(matches!(
             result,
             Err(ConfigLoadError::ConfigFileInvalidValue("chown_home", _))
+        ));
+    }
+
+    #[test]
+    fn load_config_key_rejects_invalid_yaml_uid_type() {
+        let config_file = parse_yaml_document("host_uid: app");
+
+        let result = load_config_key(
+            TEST_ENV_KEY,
+            &config_file,
+            "host_uid",
+            false,
+            None,
+            &parse_uid_str,
+            &parse_uid_yaml,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ConfigLoadError::ConfigFileInvalidValue("host_uid", _))
+        ));
+    }
+
+    #[test]
+    fn load_config_key_rejects_negative_yaml_uid() {
+        let config_file = parse_yaml_document("host_uid: -1");
+
+        let result = load_config_key(
+            TEST_ENV_KEY,
+            &config_file,
+            "host_uid",
+            false,
+            None,
+            &parse_uid_str,
+            &parse_uid_yaml,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ConfigLoadError::ConfigFileInvalidValue("host_uid", _))
         ));
     }
 
