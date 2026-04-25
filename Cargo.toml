@@ -10,6 +10,7 @@ lto = true
 codegen-units = 1
 incremental = false
 panic = "abort"
+strip = "symbols"
 
 [dependencies]
 yaml-rust2 = "^0.11.0"

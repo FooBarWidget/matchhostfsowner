@@ -7,6 +7,9 @@ on:
       - '*.png'
       - '*.jpg'
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   test:
 
@@ -24,9 +27,9 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+        key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
     - name: Build
-      run: cargo build --color=always --verbose
+      run: cargo build --verbose
     - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
     - uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
       with:
@@ -37,4 +40,4 @@ jobs:
         cache-to: type=gha,mode=max
         load: true
     - name: Run tests
-      run: cargo test --color=always --verbose
+      run: cargo test --verbose

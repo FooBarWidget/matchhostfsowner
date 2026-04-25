@@ -11,9 +11,10 @@ MatchHostFsOwner solves [the Docker host filesystem owner matching problem](http
 
 **Table of contents**
 
- - [What is the Docker host filesystem owner matching problem?](#what-is-the-docker-host-filesystem-owner-matching-problem)
- - [How does MatchHostFsOwner solve the problem?](#how-does-matchhostfsowner-solve-the-problem)
- - [Basic usage](#basic-usage)
+- [MatchHostFsOwner: solving the Docker host filesystem owner matching problem](#matchhostfsowner-solving-the-docker-host-filesystem-owner-matching-problem)
+  - [What is the Docker host filesystem owner matching problem?](#what-is-the-docker-host-filesystem-owner-matching-problem)
+  - [How does MatchHostFsOwner solve the problem?](#how-does-matchhostfsowner-solve-the-problem)
+  - [Basic usage](#basic-usage)
     - [Usage mode 1: start container without root privileges](#usage-mode-1-start-container-without-root-privileges)
       - [Container image build instructions](#container-image-build-instructions)
       - [Container start instructions](#container-start-instructions)
@@ -25,20 +26,21 @@ MatchHostFsOwner solves [the Docker host filesystem owner matching problem](http
         - [Docker CLI](#docker-cli-1)
         - [Docker Compose](#docker-compose)
         - [Kubernetes](#kubernetes-1)
- - [Advanced usage](#advanced-usage)
+  - [Advanced usage](#advanced-usage)
     - [Custom user/group account name](#custom-usergroup-account-name)
     - [Combining other entrypoint programs with MatchHostFsOwner](#combining-other-entrypoint-programs-with-matchhostfsowner)
       - [Wrapping MatchHostFsOwner around other entrypoint programs](#wrapping-matchhostfsowner-around-other-entrypoint-programs)
       - [Wrapping other entrypoint programs around MatchHostFsOwner](#wrapping-other-entrypoint-programs-around-matchhostfsowner)
     - [Hooks](#hooks)
-      - [Don't hardcode app account name or home directory!](#dont-hardcode-app-account-name-or-home-directory)
- - [Special considerations](#special-considerations)
+      - [Hooks example](#hooks-example)
+    - [Don't hardcode app account name or home directory!](#dont-hardcode-app-account-name-or-home-directory)
+  - [Special considerations](#special-considerations)
     - [Security of setuid root bit](#security-of-setuid-root-bit)
     - [Chowning of home directory](#chowning-of-home-directory)
       - [Disabling chowning](#disabling-chowning)
       - [Chowning only selected files](#chowning-only-selected-files)
- - [Troubleshooting](#troubleshooting)
- - [Development](#development)
+  - [Troubleshooting](#troubleshooting)
+  - [Development](#development)
 
 ## What is the Docker host filesystem owner matching problem?
 
@@ -105,12 +107,12 @@ Limitations of this mode:
 Example:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
-# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# Install MatchHostFsOwner. Replace $VERSION and $ARCH with the desired value.
 # See https://github.com/FooBarWidget/matchhostfsowner/releases
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
-RUN gunzip /sbin/matchhostfsowner.gz && \
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v$VERSION/matchhostfsowner-$VERSION-$ARCH-linux.gz /sbin/matchhostfsowner.gz
+RUN gunzip -N /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
 RUN addgroup --gid 9999 app && \
@@ -189,12 +191,12 @@ This mode is most suitable if any of the following is applicable:
 Example:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
-# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# Install MatchHostFsOwner. Replace $VERSION and $ARCH with the desired value.
 # See https://github.com/FooBarWidget/matchhostfsowner/releases
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
-RUN gunzip /sbin/matchhostfsowner.gz && \
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v$VERSION/matchhostfsowner-$VERSION-$ARCH-linux.gz /sbin/matchhostfsowner.gz
+RUN gunzip -N /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x /sbin/matchhostfsowner
 RUN addgroup --gid 9999 app && \
@@ -328,7 +330,7 @@ MatchHostFsOwner works by executing the command passed through its arguments aft
 For example let's say that your container currently has an entrypoint program that prints "hello world", and that the container's main command touches a host-mounted file, like this:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ADD my_entrypoint.sh /
 
@@ -347,12 +349,12 @@ exec "$@"
 You can combine it with MatchHostFsOwner like this:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
-# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# Install MatchHostFsOwner. Replace $VERSION and $ARCH with the desired value.
 # See https://github.com/FooBarWidget/matchhostfsowner/releases
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
-RUN gunzip /sbin/matchhostfsowner.gz && \
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v$VERSION/matchhostfsowner-$VERSION-$ARCH-linux.gz /sbin/matchhostfsowner.gz
+RUN gunzip -N /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
 RUN addgroup --gid 9999 app && \
@@ -373,7 +375,7 @@ Be aware when doing this. Your other entrypoint programs shouldn't access host f
 Let's say that your container currently has an entrypoint program that prints "hello world", and that the container's main command touches a host-mounted file, like this:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ADD my_entrypoint.sh /
 
@@ -392,12 +394,12 @@ exec "$@"
 You can combine it with MatchHostFsOwner like this:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
-# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# Install MatchHostFsOwner. Replace $VERSION and $ARCH with the desired value.
 # See https://github.com/FooBarWidget/matchhostfsowner/releases
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
-RUN gunzip /sbin/matchhostfsowner.gz && \
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v$VERSION/matchhostfsowner-$VERSION-$ARCH-linux.gz /sbin/matchhostfsowner.gz
+RUN gunzip -N /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
 RUN addgroup --gid 9999 app && \
@@ -430,7 +432,7 @@ The following environment variables are passed to hooks:
 Let's say that your container currently has an entrypoint program that prints "hello world", and that the container's main command touches a host-mounted file, like this:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
 ADD my_entrypoint.sh /
 
@@ -449,12 +451,12 @@ exec "$@"
 Let's convert this example into one that uses hooks:
 
 ~~~dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:26.04
 
-# Install MatchHostFsOwner. Replace X.X.X with an actual version.
+# Install MatchHostFsOwner. Replace $VERSION and $ARCH with the desired value.
 # See https://github.com/FooBarWidget/matchhostfsowner/releases
-ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/vX.X.X/matchhostfsowner-X.X.X-x86_64-linux.gz /sbin/matchhostfsowner.gz
-RUN gunzip /sbin/matchhostfsowner.gz && \
+ADD https://github.com/FooBarWidget/matchhostfsowner/releases/download/v$VERSION/matchhostfsowner-$VERSION-$ARCH-linux.gz /sbin/matchhostfsowner.gz
+RUN gunzip -N /sbin/matchhostfsowner.gz && \
   chown root: /sbin/matchhostfsowner && \
   chmod +x,+s /sbin/matchhostfsowner
 RUN addgroup --gid 9999 app && \

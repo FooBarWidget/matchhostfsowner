@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CROSS_REV: 88f49ff79e777bef6d3564531636ee4d3cc2f8d2 # v0.2.5
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            cargo_target: x86_64-unknown-linux-musl
+            asset_suffix: x86_64-linux
+          - runner: ubuntu-24.04
+            cargo_target: aarch64-unknown-linux-musl
+            asset_suffix: aarch64-linux
+    runs-on: ${{ matrix.runner }}
+    name: Build ${{ matrix.asset_suffix }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('Cargo.lock') }}-cross-${{ env.CROSS_REV }}
+
+      - name: Install cross
+        run: |
+          set -euo pipefail
+          if command -v cross >/dev/null 2>&1; then
+            echo "cross already present in cargo bin cache"
+            cross --version
+            exit 0
+          fi
+
+          cargo install cross --git https://github.com/cross-rs/cross --rev "$CROSS_REV" --locked
+
+      - name: Build
+        run: cross build --release --target "$CARGO_TARGET" --verbose
+        env:
+          CARGO_TARGET: ${{ matrix.cargo_target }}
+
+      - name: Resolve package name
+        id: pkg
+        run: |
+          set -euo pipefail
+          PKG_NAME=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].name')
+          PKG_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
+          echo "pkg_name=$PKG_NAME" >> "$GITHUB_OUTPUT"
+          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Package artifact
+        id: package
+        run: |
+          set -euo pipefail
+          BIN_PATH="target/$CARGO_TARGET/release/$PKG_NAME"
+          if [ ! -x "$BIN_PATH" ]; then
+            echo "Expected binary not found at $BIN_PATH"
+            ls -la "target/$CARGO_TARGET/release" || true
+            exit 1
+          fi
+
+          file "$BIN_PATH"
+          if readelf -d "$BIN_PATH" 2>/dev/null | grep -q '(NEEDED)'; then
+            echo "Expected a static binary but found dynamic library dependencies"
+            exit 1
+          fi
+
+          ARCHIVE="${PKG_NAME}-${VERSION_NAME}-${ASSET_SUFFIX}.gz"
+          mkdir -p dist
+          gzip --best "$BIN_PATH" -c > "dist/$ARCHIVE"
+          echo "Created dist/$ARCHIVE"
+          echo "archive_path=dist/$ARCHIVE" >> "$GITHUB_OUTPUT"
+        env:
+          PKG_NAME: ${{ steps.pkg.outputs.pkg_name }}
+          VERSION_NAME: ${{ steps.pkg.outputs.pkg_version }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          CARGO_TARGET: ${{ matrix.cargo_target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          path: ${{ steps.package.outputs.archive_path }}
+          if-no-files-found: error
+
+  create_release:
+    name: Create release
+    runs-on: ubuntu-24.04
+    needs: build
+    environment: release
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist-all
+
+      - name: Resolve release metadata
+        id: release_meta
+        run: |
+          set -euo pipefail
+          PKG_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
+          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=v${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        run: |
+          git tag "$TAG_NAME" "$GITHUB_SHA"
+          echo git push origin "refs/tags/$TAG_NAME"
+        env:
+          TAG_NAME: ${{ steps.release_meta.outputs.tag_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: dist-all/**/*.gz
+
+      - name: Create or update draft release with gh
+        run: gh release create "$TAG_NAME" --draft --generate-notes --target "$GITHUB_SHA"
+        env:
+          TAG_NAME: ${{ steps.release_meta.outputs.tag_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload assets to release
+        run: gh release upload "$RELEASE_NAME" dist-all/**/*.gz
+        env:
+          RELEASE_NAME: ${{ steps.release_meta.outputs.tag_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
