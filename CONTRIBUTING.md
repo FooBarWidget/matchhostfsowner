@@ -16,4 +16,5 @@ cargo test
 
  1. Bump version number in Cargo.toml. Run `cargo check`, then commit & push the result.
  2. Ensure CI passes for the main branch.
- 3. Trigger the release workflow.
+ 3. Trigger the release workflow. This creates a draft release.
+ 4. Edit the release notes and publish the release.

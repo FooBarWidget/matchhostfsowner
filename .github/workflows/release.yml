@@ -122,7 +122,7 @@ jobs:
       - name: Create release tag
         run: |
           git tag "$TAG_NAME" "$GITHUB_SHA"
-          echo git push origin "refs/tags/$TAG_NAME"
+          git push origin "refs/tags/$TAG_NAME"
         env:
           TAG_NAME: ${{ steps.release_meta.outputs.tag_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
