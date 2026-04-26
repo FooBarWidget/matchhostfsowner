@@ -265,9 +265,6 @@ kind: Pod
 metadata:
   name: security-context-demo
 spec:
-  securityContext:
-    runAsUser: <HOST UID HERE>
-    runAsGroup: <HOST GID HERE>
   volumes:
     - name: host
       hostPath:
