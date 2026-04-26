@@ -7,6 +7,9 @@ env:
   CARGO_TERM_COLOR: always
   CROSS_REV: 88f49ff79e777bef6d3564531636ee4d3cc2f8d2 # v0.2.5
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
