@@ -115,9 +115,46 @@ jobs:
         id: release_meta
         run: |
           set -euo pipefail
+          PKG_NAME=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].name')
           PKG_VERSION=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].version')
+          echo "pkg_name=$PKG_NAME" >> "$GITHUB_OUTPUT"
           echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=v${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SPDX SBOM from GitHub dependency graph
+        run: |
+          set -euo pipefail
+          mkdir -p dist-all/sbom
+          SBOM_PATH="dist-all/sbom/${PKG_NAME}-${PKG_VERSION}.spdx.json"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/${GITHUB_REPOSITORY}/dependency-graph/sbom" > "$SBOM_PATH"
+          echo "Created $SBOM_PATH"
+        env:
+          PKG_NAME: ${{ steps.release_meta.outputs.pkg_name }}
+          PKG_VERSION: ${{ steps.release_meta.outputs.pkg_version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          set -euo pipefail
+          mkdir -p dist-all/sbom
+          SBOM_NAME="${PKG_NAME}-${PKG_VERSION}.cdx"
+          cargo cyclonedx --format json --override-filename "$SBOM_NAME"
+          mv "$SBOM_NAME.json" "dist-all/sbom/"
+        env:
+          PKG_NAME: ${{ steps.release_meta.outputs.pkg_name }}
+          PKG_VERSION: ${{ steps.release_meta.outputs.pkg_version }}
+
+      - name: Upload SBOMs as artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sboms
+          path: dist-all/sbom/**/*.json
 
       - name: Create release tag
         run: |
@@ -127,10 +164,15 @@ jobs:
           TAG_NAME: ${{ steps.release_meta.outputs.tag_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate artifact attestation
+      - name: Generate attestation for binaries
         uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: dist-all/**/*.gz
+
+      - name: Generate attestation for SBOMs
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: dist-all/sbom/**/*.json
 
       - name: Create or update draft release with gh
         run: gh release create "$TAG_NAME" --draft --generate-notes --target "$GITHUB_SHA"
@@ -139,7 +181,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload assets to release
-        run: gh release upload "$RELEASE_NAME" dist-all/**/*.gz
+        run: gh release upload "$RELEASE_NAME" dist-all/**/*.gz dist-all/sbom/*.spdx.json dist-all/sbom/*.cdx.json
         env:
           RELEASE_NAME: ${{ steps.release_meta.outputs.tag_name }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
