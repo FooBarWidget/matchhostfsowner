@@ -314,11 +314,11 @@ You can combine other entrypoint programs with MatchHostFsOwner in three ways:
 
  * Wrapping MatchHostFsOwner around other entrypoint programs.
     - This runs other entrypoint programs under a normal user account.
-    - By the time other entrypoint programs run, MatchHostFsOwner has already done its job, so it's fine for other entrypoint programs to access host files.
- * Wrapping MatchHostFsOwner around other entrypoint programs.
+    - By the time other entrypoint programs are done, MatchHostFsOwner has already done its job, so it's fine for other entrypoint programs to access host files.
+ * Wrapping other entrypoint programs around MatchHostFsOwner.
     - Under usage mode 1, this runs other entrypoint programs under a normal user account.
     - Under usage mode 2, this runs other entrypoint programs as root.
-    - By the time other entrypoint programs run, MatchHostFsOwner has *not* done its job. So be careful with accessing host files in those entrypoint programs, especially because the effective user is different for each usage mode.
+    - By the time other entrypoint programs are done, MatchHostFsOwner has *not* done its job. So be careful with accessing host files in those entrypoint programs, especially because the effective user is different for each usage mode.
  * By using [hooks](#hooks) (**recommended**).
     - Hooks are always run as root, regardless of usage mode.
     - Hooks are run after MatchHostFsOwner has done most of its work, but before MatchHostFsOwner has dropped its privileges.
