@@ -1,0 +1,6 @@
+name: "CodeQL Config"
+
+query-filters:
+  - exclude:
+      # Supress false positives about debug!/info!/warn!/error! logging sensitive info
+      id: rust/clear-text-logging
