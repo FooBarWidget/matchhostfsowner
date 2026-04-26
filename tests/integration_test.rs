@@ -298,6 +298,36 @@ fn test_match_user_via_docker_cli_user_arg() -> Result<(), Box<dyn error::Error>
 }
 
 #[test]
+fn test_match_user_preserves_supplementary_groups_when_account_and_group_names_differ()
+-> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 41000 appgroup",
+        "RUN groupadd --gid 42000 extra",
+        "RUN useradd -m --uid 41001 --gid 41000 --groups extra --comment '' appuser",
+    ])?;
+
+    let output = run_container(
+        &image,
+        &[
+            "-e",
+            "MHF_HOST_UID=43000",
+            "-e",
+            "MHF_HOST_GID=43001",
+            "-e",
+            "MHF_APP_ACCOUNT=appuser",
+            "-e",
+            "MHF_APP_GROUP=appgroup",
+        ],
+        &["id"],
+    )?;
+
+    assert_contains_substr!(output.text, "uid=43000(appuser) gid=43001(appgroup)");
+    assert_contains_substr!(output.text, "42000(extra)");
+    assert_eq!(Some(0), output.status.code);
+    Ok(())
+}
+
+#[test]
 fn test_idempotent() -> Result<(), Box<dyn error::Error>> {
     let image = build_image(&[
         "RUN groupadd --gid 1234 app",

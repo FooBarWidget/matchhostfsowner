@@ -788,8 +788,11 @@ fn run_hooks(
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-fn change_supplementary_groups(target_group_details: &GroupDetails) {
-    let user_c = CString::new(target_group_details.name.as_bytes()).unwrap_or_else(|err| {
+fn change_supplementary_groups(
+    target_account_details: &UserDetails,
+    target_group_details: &GroupDetails,
+) {
+    let user_c = CString::new(target_account_details.name.as_bytes()).unwrap_or_else(|err| {
         abort!(
             "Error changing process supplementary groups: error allocating a C string: {}",
             err
@@ -801,7 +804,10 @@ fn change_supplementary_groups(target_group_details: &GroupDetails) {
 }
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-fn change_supplementary_groups(_target_account_details: &GroupDetails) {
+fn change_supplementary_groups(
+    _target_account_details: &UserDetails,
+    _target_group_details: &GroupDetails,
+) {
     // Not supported by nix crate
 }
 
@@ -815,7 +821,7 @@ fn change_user(target_account_details: &UserDetails, target_group_details: &Grou
         "Setting process supplementary groups to those belonging to group '{}' (GID {}).",
         target_group_details.name, target_group_details.gid
     );
-    change_supplementary_groups(target_group_details);
+    change_supplementary_groups(target_account_details, target_group_details);
 
     debug!(
         "Setting process group to '{}' (GID {}).",
