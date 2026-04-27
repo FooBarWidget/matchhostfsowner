@@ -1,5 +1,12 @@
 use super::system_calls::{RealSystemCalls, SystemCalls};
 use nix::unistd::{self, Gid, Uid};
+use nix::{
+    errno::Errno,
+    fcntl::{AtFlags, OFlag, open, openat},
+    sys::stat::{FileStat, Mode, SFlag, fstat, fstatat},
+};
+use std::fs::File;
+use std::os::fd::OwnedFd;
 use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt};
 use std::{borrow::Cow, ffi::OsStr, fs, io, path::Path, path::PathBuf, process};
 use thiserror::Error;
@@ -291,6 +298,386 @@ pub fn chown_dir_recursively_no_fs_boundary_crossing(
     }
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SecurePathTargetKind {
+    File,
+    Directory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SecurePathComponentRole {
+    ParentDirectory,
+    Target(SecurePathTargetKind),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SecurePathComponentKind {
+    Directory,
+    RegularFile,
+    Symlink,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SecurePathViolation {
+    NotADirectory,
+    NotARegularFile,
+    Symlink,
+    NotOwnedByRootUserAndGroup,
+    FilePermissionsNot0600,
+    DirectoryWritableByOthers,
+}
+
+#[derive(Error, Debug)]
+pub enum ValidateSecurePathError {
+    #[error("Error opening / while validating path: {0}")]
+    OpenRootDirectory(Errno),
+
+    #[error("Error opening path component {path}: {err}")]
+    OpenPathComponent { path: PathBuf, err: Errno },
+
+    #[error("Error inspecting path component {path}: {err}")]
+    InspectPathComponent { path: PathBuf, err: Errno },
+
+    #[error("Error validating {path}: {message}")]
+    SecurityViolation { path: PathBuf, message: String },
+
+    #[error("Error validating {path}: {message}")]
+    InvalidPath { path: PathBuf, message: String },
+}
+
+#[allow(dead_code)]
+pub fn validate_secure_file_path(path: &Path) -> Result<bool, ValidateSecurePathError> {
+    match open_secure_path(path, SecurePathTargetKind::File)? {
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
+}
+
+#[allow(dead_code)]
+pub fn validate_secure_directory_path(path: &Path) -> Result<bool, ValidateSecurePathError> {
+    match open_secure_path(path, SecurePathTargetKind::Directory)? {
+        Some(_) => Ok(true),
+        None => Ok(false),
+    }
+}
+
+pub fn open_secure_file_for_reading(path: &Path) -> Result<Option<File>, ValidateSecurePathError> {
+    match open_secure_path(path, SecurePathTargetKind::File)? {
+        Some(fd) => Ok(Some(File::from(fd))),
+        None => Ok(None),
+    }
+}
+
+fn open_secure_path(
+    resolved_path: &Path,
+    target_kind: SecurePathTargetKind,
+) -> Result<Option<OwnedFd>, ValidateSecurePathError> {
+    let component_names = normalized_secure_path_components(resolved_path)?;
+
+    if component_names.is_empty() {
+        return Err(ValidateSecurePathError::SecurityViolation {
+            path: resolved_path.to_path_buf(),
+            message: secure_path_violation_message(
+                resolved_path,
+                SecurePathComponentRole::Target(target_kind),
+                match target_kind {
+                    SecurePathTargetKind::File => SecurePathViolation::NotARegularFile,
+                    SecurePathTargetKind::Directory => SecurePathViolation::NotADirectory,
+                },
+            ),
+        });
+    }
+
+    let mut current_dir_fd = open(Path::new("/"), directory_open_flags(), Mode::empty())
+        .map_err(ValidateSecurePathError::OpenRootDirectory)?;
+    validate_opened_path_component(
+        &current_dir_fd,
+        Path::new("/"),
+        SecurePathComponentRole::ParentDirectory,
+        resolved_path,
+    )?;
+
+    let mut current_path = PathBuf::from("/");
+
+    for (index, component_name) in component_names.iter().enumerate() {
+        let role = if index + 1 == component_names.len() {
+            SecurePathComponentRole::Target(target_kind)
+        } else {
+            SecurePathComponentRole::ParentDirectory
+        };
+        current_path.push(component_name);
+
+        let file_stat = match fstatat(
+            &current_dir_fd,
+            Path::new(component_name),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(file_stat) => file_stat,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(err) => {
+                return Err(ValidateSecurePathError::InspectPathComponent {
+                    path: current_path.clone(),
+                    err,
+                });
+            }
+        };
+
+        validate_secure_path_component_policy(
+            current_path.as_path(),
+            resolved_path,
+            role,
+            secure_path_component_kind_from_stat(&file_stat),
+            file_stat.st_uid,
+            file_stat.st_gid,
+            secure_path_component_mode_bits(&file_stat),
+        )?;
+
+        let opened_fd = match openat(
+            &current_dir_fd,
+            Path::new(component_name),
+            open_flags_for_role(role),
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(Errno::ELOOP) => {
+                return Err(ValidateSecurePathError::SecurityViolation {
+                    path: resolved_path.to_path_buf(),
+                    message: secure_path_violation_message(
+                        current_path.as_path(),
+                        role,
+                        SecurePathViolation::Symlink,
+                    ),
+                });
+            }
+            Err(err) => {
+                return Err(ValidateSecurePathError::OpenPathComponent {
+                    path: current_path.clone(),
+                    err,
+                });
+            }
+        };
+
+        validate_opened_path_component(&opened_fd, current_path.as_path(), role, resolved_path)?;
+
+        if role == SecurePathComponentRole::Target(target_kind) {
+            return Ok(Some(opened_fd));
+        }
+
+        current_dir_fd = opened_fd;
+    }
+
+    unreachable!("path walk should return from inside the loop")
+}
+
+fn normalized_secure_path_components(
+    path: &Path,
+) -> Result<Vec<std::ffi::OsString>, ValidateSecurePathError> {
+    if !path.is_absolute() {
+        return Err(ValidateSecurePathError::InvalidPath {
+            path: path.to_path_buf(),
+            message: String::from("path must be absolute"),
+        });
+    }
+
+    let mut result = Vec::new();
+
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(name) => result.push(name.to_os_string()),
+            std::path::Component::CurDir | std::path::Component::ParentDir => {
+                return Err(ValidateSecurePathError::InvalidPath {
+                    path: path.to_path_buf(),
+                    message: String::from("path must not contain '.' or '..' components"),
+                });
+            }
+            std::path::Component::Prefix(..) => {
+                return Err(ValidateSecurePathError::InvalidPath {
+                    path: path.to_path_buf(),
+                    message: String::from("path must be a Unix-style absolute path"),
+                });
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+fn directory_open_flags() -> OFlag {
+    OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK
+}
+
+fn open_flags_for_role(role: SecurePathComponentRole) -> OFlag {
+    let base_flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK;
+
+    match role {
+        SecurePathComponentRole::ParentDirectory
+        | SecurePathComponentRole::Target(SecurePathTargetKind::Directory) => {
+            base_flags | OFlag::O_DIRECTORY
+        }
+        SecurePathComponentRole::Target(SecurePathTargetKind::File) => base_flags,
+    }
+}
+
+fn validate_opened_path_component(
+    fd: &OwnedFd,
+    path: &Path,
+    role: SecurePathComponentRole,
+    resolved_path: &Path,
+) -> Result<(), ValidateSecurePathError> {
+    let file_stat = fstat(fd).map_err(|err| ValidateSecurePathError::InspectPathComponent {
+        path: path.to_path_buf(),
+        err,
+    })?;
+
+    validate_secure_path_component_policy(
+        path,
+        resolved_path,
+        role,
+        secure_path_component_kind_from_stat(&file_stat),
+        file_stat.st_uid,
+        file_stat.st_gid,
+        secure_path_component_mode_bits(&file_stat),
+    )
+}
+
+fn secure_path_component_kind_from_stat(file_stat: &FileStat) -> SecurePathComponentKind {
+    match SFlag::from_bits_truncate(file_stat.st_mode) & SFlag::S_IFMT {
+        SFlag::S_IFDIR => SecurePathComponentKind::Directory,
+        SFlag::S_IFREG => SecurePathComponentKind::RegularFile,
+        SFlag::S_IFLNK => SecurePathComponentKind::Symlink,
+        _ => SecurePathComponentKind::Other,
+    }
+}
+
+fn secure_path_component_mode_bits(file_stat: &FileStat) -> u32 {
+    (file_stat.st_mode as u32) & 0o7777
+}
+
+fn validate_secure_path_component_policy(
+    path: &Path,
+    resolved_path: &Path,
+    role: SecurePathComponentRole,
+    kind: SecurePathComponentKind,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+) -> Result<(), ValidateSecurePathError> {
+    let violation = match role {
+        SecurePathComponentRole::ParentDirectory => {
+            if kind == SecurePathComponentKind::Symlink {
+                Some(SecurePathViolation::Symlink)
+            } else if kind != SecurePathComponentKind::Directory {
+                Some(SecurePathViolation::NotADirectory)
+            } else if uid != 0 || gid != 0 {
+                Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
+            } else if mode & 0o002 != 0 {
+                Some(SecurePathViolation::DirectoryWritableByOthers)
+            } else {
+                None
+            }
+        }
+        SecurePathComponentRole::Target(SecurePathTargetKind::File) => {
+            if kind == SecurePathComponentKind::Symlink {
+                Some(SecurePathViolation::Symlink)
+            } else if kind != SecurePathComponentKind::RegularFile {
+                Some(SecurePathViolation::NotARegularFile)
+            } else if uid != 0 || gid != 0 {
+                Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
+            } else if mode != 0o600 {
+                Some(SecurePathViolation::FilePermissionsNot0600)
+            } else {
+                None
+            }
+        }
+        SecurePathComponentRole::Target(SecurePathTargetKind::Directory) => {
+            if kind == SecurePathComponentKind::Symlink {
+                Some(SecurePathViolation::Symlink)
+            } else if kind != SecurePathComponentKind::Directory {
+                Some(SecurePathViolation::NotADirectory)
+            } else if uid != 0 || gid != 0 {
+                Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
+            } else if mode & 0o002 != 0 {
+                Some(SecurePathViolation::DirectoryWritableByOthers)
+            } else {
+                None
+            }
+        }
+    };
+
+    match violation {
+        Some(violation) => Err(ValidateSecurePathError::SecurityViolation {
+            path: resolved_path.to_path_buf(),
+            message: secure_path_violation_message(path, role, violation),
+        }),
+        None => Ok(()),
+    }
+}
+
+fn secure_path_violation_message(
+    path: &Path,
+    role: SecurePathComponentRole,
+    violation: SecurePathViolation,
+) -> String {
+    match (role, violation) {
+        (SecurePathComponentRole::ParentDirectory, SecurePathViolation::Symlink) => {
+            format!("parent directory {} must not be a symlink", path.display())
+        }
+        (SecurePathComponentRole::ParentDirectory, SecurePathViolation::NotADirectory) => {
+            format!("parent directory {} must be a directory", path.display())
+        }
+        (
+            SecurePathComponentRole::ParentDirectory,
+            SecurePathViolation::NotOwnedByRootUserAndGroup,
+        )
+        | (
+            SecurePathComponentRole::Target(SecurePathTargetKind::File),
+            SecurePathViolation::NotOwnedByRootUserAndGroup,
+        )
+        | (
+            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
+            SecurePathViolation::NotOwnedByRootUserAndGroup,
+        ) => String::from("must be owned by user root and group root"),
+        (
+            SecurePathComponentRole::ParentDirectory,
+            SecurePathViolation::DirectoryWritableByOthers,
+        ) => {
+            format!(
+                "parent directory {} must not be writable by anyone other than user root and group root",
+                path.display()
+            )
+        }
+        (
+            SecurePathComponentRole::Target(SecurePathTargetKind::File),
+            SecurePathViolation::Symlink,
+        ) => String::from("it must not be a symlink"),
+        (
+            SecurePathComponentRole::Target(SecurePathTargetKind::File),
+            SecurePathViolation::NotARegularFile,
+        ) => String::from("it must be a regular file"),
+        (
+            SecurePathComponentRole::Target(SecurePathTargetKind::File),
+            SecurePathViolation::FilePermissionsNot0600,
+        ) => String::from("must have permissions u=rw,g=,o= (mode 0600)"),
+        (
+            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
+            SecurePathViolation::Symlink,
+        ) => String::from("it must not be a symlink"),
+        (
+            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
+            SecurePathViolation::NotADirectory,
+        ) => String::from("it must be a directory"),
+        (
+            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
+            SecurePathViolation::DirectoryWritableByOthers,
+        ) => String::from("must not be writable by anyone other than user root and group root"),
+        _ => unreachable!("unexpected secure path violation for role"),
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ListDirError {
     #[error("Error reading directory {0}: {1}")]
@@ -335,6 +722,108 @@ mod tests {
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     use std::{fs, fs::File, io, path::Path, thread, time::Duration};
     use tempfile::tempdir;
+
+    #[test]
+    fn validate_secure_path_component_policy_accepts_secure_file() {
+        let result = super::validate_secure_path_component_policy(
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::File),
+            super::SecurePathComponentKind::RegularFile,
+            0,
+            0,
+            0o600,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_secure_path_component_policy_rejects_non_root_owned_file() {
+        let result = super::validate_secure_path_component_policy(
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::File),
+            super::SecurePathComponentKind::RegularFile,
+            1234,
+            0,
+            0o600,
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+                if message == "must be owned by user root and group root"
+        ));
+    }
+
+    #[test]
+    fn validate_secure_path_component_policy_rejects_insecure_file_mode() {
+        let result = super::validate_secure_path_component_policy(
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::File),
+            super::SecurePathComponentKind::RegularFile,
+            0,
+            0,
+            0o644,
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+                if message == "must have permissions u=rw,g=,o= (mode 0600)"
+        ));
+    }
+
+    #[test]
+    fn validate_secure_path_component_policy_rejects_parent_symlink() {
+        let result = super::validate_secure_path_component_policy(
+            Path::new("/etc/matchhostfsowner"),
+            Path::new("/etc/matchhostfsowner/config.yml"),
+            super::SecurePathComponentRole::ParentDirectory,
+            super::SecurePathComponentKind::Symlink,
+            0,
+            0,
+            0o700,
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+                if message == "parent directory /etc/matchhostfsowner must not be a symlink"
+        ));
+    }
+
+    #[test]
+    fn validate_secure_path_component_policy_rejects_writable_target_directory() {
+        let result = super::validate_secure_path_component_policy(
+            Path::new("/etc/matchhostfsowner/hooks.d"),
+            Path::new("/etc/matchhostfsowner/hooks.d"),
+            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::Directory),
+            super::SecurePathComponentKind::Directory,
+            0,
+            0,
+            0o777,
+        );
+
+        assert!(matches!(
+            result,
+            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+                if message == "must not be writable by anyone other than user root and group root"
+        ));
+    }
+
+    #[test]
+    fn normalized_secure_path_components_rejects_dot_segments() {
+        let result = super::normalized_secure_path_components(Path::new("/etc/../tmp/config.yml"));
+
+        assert!(matches!(
+            result,
+            Err(super::ValidateSecurePathError::InvalidPath { message, .. })
+                if message == "path must not contain '.' or '..' components"
+        ));
+    }
 
     fn create_file_return_ctime(path: &impl AsRef<Path>) -> io::Result<i64> {
         File::create(path)?;

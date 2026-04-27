@@ -388,3 +388,177 @@ fn test_user_root_group_idempotent() -> Result<(), Box<dyn error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_config_file_with_secure_permissions_allowed() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0700 /etc/matchhostfsowner",
+        "RUN chmod 0600 /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(output.text, "uid=1300(app) gid=1301(app)");
+    assert!(output.status.success());
+
+    Ok(())
+}
+
+#[test]
+fn test_config_file_non_root_user_owned_rejected() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner",
+        "RUN chown app:root /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0700 /etc/matchhostfsowner",
+        "RUN chmod 0600 /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): must be owned by user root and group root"
+    );
+    assert!(!output.status.success());
+
+    Ok(())
+}
+
+#[test]
+fn test_config_file_non_root_group_owned_rejected() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner",
+        "RUN chown root:app /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0700 /etc/matchhostfsowner",
+        "RUN chmod 0600 /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): must be owned by user root and group root"
+    );
+    assert!(!output.status.success());
+
+    Ok(())
+}
+
+#[test]
+fn test_config_file_strict_permissions_required() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner",
+        "RUN chown root:root /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0700 /etc/matchhostfsowner",
+        "RUN chmod 0644 /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): must have permissions u=rw,g=,o= (mode 0600)"
+    );
+    assert!(!output.status.success());
+
+    Ok(())
+}
+
+#[test]
+fn test_config_file_non_root_writable_parents_rejected() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0777 /etc/matchhostfsowner",
+        "RUN chmod 0600 /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc/matchhostfsowner must not be writable by anyone other than user root and group root"
+    );
+    assert!(!output.status.success());
+
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0755 /etc/matchhostfsowner",
+        "RUN chmod 0600 /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0777 /etc",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc must not be writable by anyone other than user root and group root"
+    );
+    assert!(!output.status.success());
+
+    Ok(())
+}
+
+#[test]
+fn test_config_file_symlink_rejected() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner /etc/matchhostfsowner-real",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner-real/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner /etc/matchhostfsowner-real /etc/matchhostfsowner-real/config.yml",
+        "RUN chmod 0700 /etc/matchhostfsowner /etc/matchhostfsowner-real",
+        "RUN chmod 0600 /etc/matchhostfsowner-real/config.yml",
+        "RUN ln -s /etc/matchhostfsowner-real/config.yml /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): it must not be a symlink"
+    );
+    assert!(!output.status.success());
+
+    Ok(())
+}
+
+#[test]
+fn test_config_file_parent_symlinks_rejected() -> Result<(), Box<dyn error::Error>> {
+    let image = build_image(&[
+        "RUN groupadd --gid 1234 app",
+        "RUN useradd -m --uid 1234 --gid 1234 --comment '' app",
+        "RUN mkdir -p /etc/matchhostfsowner-real",
+        "RUN ln -s /etc/matchhostfsowner-real /etc/matchhostfsowner",
+        "RUN printf '%s\\n' 'host_uid: 1300' 'host_gid: 1301' > /etc/matchhostfsowner/config.yml",
+        "RUN chown root:root /etc/matchhostfsowner /etc/matchhostfsowner/config.yml",
+        "RUN chmod 0700 /etc/matchhostfsowner",
+        "RUN chmod 0600 /etc/matchhostfsowner/config.yml",
+    ])?;
+
+    let output = run_container(&image, &[], &["id"])?;
+    assert_contains_substr!(
+        output.text,
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc/matchhostfsowner must not be a symlink"
+    );
+    assert!(!output.status.success());
+
+    Ok(())
+}

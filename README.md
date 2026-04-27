@@ -305,6 +305,8 @@ chmod 700 /etc/matchhostfsowner && \
 chmod 600 /etc/matchhostfsowner/*
 ~~~
 
+MatchHostFsOwner now enforces this at startup. It rejects the config path if `/etc/matchhostfsowner/config.yml` or any parent directory in that trust chain is not owned by root, is writable by group or others, or is a symlink. The same rules apply to an `MHF_CONFIG_FILE` override when that override is allowed.
+
 ### Combining other entrypoint programs with MatchHostFsOwner
 
 You can combine other entrypoint programs with MatchHostFsOwner in three ways:
@@ -509,6 +511,7 @@ One attack vector that we foresee is that a program in the container tries to ru
 
  * We drop the setuid root bit from the MatchHostFsOwner executable file as soon as possible, so that after MatchHostFsOwner has done its work it cannot gain root privileges again. This is why usage mode 1 is not compatible with a read-only filesystem.
  * We reset `PATH` into a well-known value, instead of using the PATH that was given to us. This way we prevent MatchHostFsOwner from executing malicious versions of otherwise innocent commands (e.g. `find`).
+ * Before parsing the config file, we open and validate each path component from `/` down to the file itself. MatchHostFsOwner aborts startup if the config file or any parent directory is not owned by root, is writable by group or others, or is a symlink.
  * We require one of the following conditions to be true:
 
      - MatchHostFsOwner is PID 1.
@@ -535,7 +538,7 @@ To disable chowning, create a file /etc/matchhostfsowner/config.yml inside the c
 chown_home: false
 ~~~
 
-Make sure to protect this file and directory appropriately:
+Apply the same ownership and permission requirements described above:
 
 ~~~bash
 chown -R root: /etc/matchhostfsowner && \

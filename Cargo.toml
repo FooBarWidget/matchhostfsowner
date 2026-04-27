@@ -17,7 +17,7 @@ yaml-rust2 = "^0.11.0"
 chrono = "^0.4.0"
 colored = "^3.1.1"
 log = { version = "^0.4.6", features = ["std"] }
-nix = { version = "^0.31.2", features = ["user", "process"] }
+nix = { version = "^0.31.2", features = ["user", "process", "fs"] }
 thiserror = "^2.0.18"
 libc = "^0.2"
 shell-escape = "^0.1.5"

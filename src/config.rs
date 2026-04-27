@@ -1,14 +1,15 @@
 use super::abort;
+use super::utils::{self, ValidateSecurePathError};
 use log::{error, warn};
+use nix::errno::Errno;
 use nix::unistd::{self, Gid, Uid};
 use std::env::{self, VarError};
-use std::error::Error;
-use std::fmt;
-use std::io;
+use std::io::{self, Read};
 use std::option::Option;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::result::Result;
+use thiserror::Error;
 use yaml_rust2::{Yaml, YamlLoader};
 
 #[derive(Debug)]
@@ -153,6 +154,7 @@ fn got_root_via_setuid_bit() -> bool {
     unistd::geteuid().is_root() && !unistd::getuid().is_root()
 }
 
+/// Guaranteed to be absolute.
 fn get_config_file_path() -> PathBuf {
     match env::var_os("MHF_CONFIG_FILE") {
         Some(val) => {
@@ -165,7 +167,14 @@ fn get_config_file_path() -> PathBuf {
                 );
                 PathBuf::from(DEFAULT_CONFIG_FILE_PATH)
             } else {
-                PathBuf::from(val)
+                let result = PathBuf::from(val);
+                if !result.is_absolute() {
+                    abort!(
+                        "Error: MHF_CONFIG_FILE env var must be an absolute path, but got '{}'",
+                        result.display()
+                    );
+                }
+                result
             }
         }
         None => PathBuf::from(DEFAULT_CONFIG_FILE_PATH),
@@ -173,16 +182,12 @@ fn get_config_file_path() -> PathBuf {
 }
 
 fn load_config_file_yaml() -> Yaml {
-    let config_file_path = &get_config_file_path();
-    // TODO: check whether config file is only only writable by root
-    let file_config_str = std::fs::read_to_string(config_file_path);
-    let file_config_str = file_config_str.unwrap_or_else(|err| {
-        if err.kind() == io::ErrorKind::NotFound {
-            String::from("{}")
-        } else {
-            abort!("Error reading from {}: {}", config_file_path.display(), err);
-        }
-    });
+    let config_file_path = get_config_file_path();
+    let file_config_str = read_trusted_config_file_to_string(config_file_path.as_path())
+        .unwrap_or_else(|err| {
+            abort!("{}", err);
+        })
+        .unwrap_or_else(|| String::from("{}"));
 
     let yaml_object = YamlLoader::load_from_str(file_config_str.as_str());
     let documents = yaml_object.unwrap_or_else(|err| {
@@ -207,30 +212,82 @@ fn load_config_file_yaml() -> Yaml {
     }
 }
 
-#[derive(Debug)]
-pub enum ConfigLoadError<'a> {
-    EnvVarInvalidValue(&'a str, String),
-    EnvVarNotUnicode(&'a str),
-    ConfigFileInvalidValue(&'a str, &'a Yaml),
+#[derive(Debug, Error)]
+enum TrustedConfigFileError {
+    #[error("Error opening / while validating config path: {0}")]
+    OpenRootDirectory(Errno),
+
+    #[error("Error opening config path component {path}: {err}")]
+    OpenPathComponent { path: PathBuf, err: Errno },
+
+    #[error("Error inspecting config path component {path}: {err}")]
+    InspectPathComponent { path: PathBuf, err: Errno },
+
+    #[error("Error loading {config_file_path} (security reason): {message}")]
+    SecurityViolation {
+        config_file_path: PathBuf,
+        message: String,
+    },
+
+    #[error("Error reading from {path}: {err}")]
+    ReadConfigFile { path: PathBuf, err: io::Error },
 }
 
-impl<'a> fmt::Display for ConfigLoadError<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ConfigLoadError::EnvVarInvalidValue(key, val) => {
-                write!(f, "Env variable {} contains invalid value '{}'", key, val)
-            }
-            ConfigLoadError::EnvVarNotUnicode(key) => {
-                write!(f, "Env variable {} contains invalid UTF-8", key)
-            }
-            ConfigLoadError::ConfigFileInvalidValue(key, doc) => {
-                write!(f, "Config option {} contains invalid value {:?}", key, doc)
+fn read_trusted_config_file_to_string(
+    resolved_config_file_path: &Path,
+) -> Result<Option<String>, TrustedConfigFileError> {
+    let mut file = match utils::open_secure_file_for_reading(resolved_config_file_path)
+        .map_err(|err| map_secure_path_error(resolved_config_file_path, err))?
+    {
+        Some(file) => file,
+        None => return Ok(None),
+    };
+
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|err| TrustedConfigFileError::ReadConfigFile {
+            path: resolved_config_file_path.to_path_buf(),
+            err,
+        })?;
+
+    Ok(Some(contents))
+}
+
+fn map_secure_path_error(
+    config_file_path: &Path,
+    err: ValidateSecurePathError,
+) -> TrustedConfigFileError {
+    match err {
+        ValidateSecurePathError::OpenRootDirectory(err) => {
+            TrustedConfigFileError::OpenRootDirectory(err)
+        }
+        ValidateSecurePathError::OpenPathComponent { path, err } => {
+            TrustedConfigFileError::OpenPathComponent { path, err }
+        }
+        ValidateSecurePathError::InspectPathComponent { path, err } => {
+            TrustedConfigFileError::InspectPathComponent { path, err }
+        }
+        ValidateSecurePathError::SecurityViolation { message, .. }
+        | ValidateSecurePathError::InvalidPath { message, .. } => {
+            TrustedConfigFileError::SecurityViolation {
+                config_file_path: config_file_path.to_path_buf(),
+                message,
             }
         }
     }
 }
 
-impl<'a> Error for ConfigLoadError<'a> {}
+#[derive(Debug, Error)]
+pub enum ConfigLoadError<'a> {
+    #[error("Env variable {0} contains invalid value '{1}'")]
+    EnvVarInvalidValue(&'a str, String),
+
+    #[error("Env variable {0} contains invalid UTF-8")]
+    EnvVarNotUnicode(&'a str),
+
+    #[error("Config option {0} contains invalid value {1:?}")]
+    ConfigFileInvalidValue(&'a str, &'a Yaml),
+}
 
 type EnvValParser<T> = dyn Fn(&str) -> Option<T>;
 type ConfigFileValParser<T> = dyn Fn(&Yaml) -> Option<T>;
