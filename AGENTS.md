@@ -2,6 +2,7 @@ MatchHostFsOwner is a Rust app that solves the Docker host filesystem owner matc
 
 ## Coding principles
 
+- Notify user about contradictions or problems with the request or architecture.
 - Prefer code to be boring and explicit rather than clever or highly abstracted. Optimize for readability and ease of following the logic. Some duplication is acceptable. Only extract shared helpers when doing so clearly improves readability or when the repeated code becomes large enough to be distracting.
 - Keep core logic focused. Extract non-core logic into helpers when that makes the core flow easier to follow.
 - When extracting helper code, prefer helpers that are generic and reusable rather than tightly coupled to one caller, unless the logic is truly specific to that one call site.

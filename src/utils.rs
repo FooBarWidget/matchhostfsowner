@@ -303,7 +303,6 @@ pub fn chown_dir_recursively_no_fs_boundary_crossing(
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SecurePathTargetKind {
     File,
@@ -324,40 +323,8 @@ enum FileType {
     Other,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Error)]
-enum SecurePathViolation {
-    #[error("parent directory {0} must not be a symlink")]
-    ParentDirectoryMustNotBeSymlink(PathBuf),
-
-    #[error("parent directory {0} must be a directory")]
-    ParentDirectoryMustBeDirectory(PathBuf),
-
-    #[error("must be owned by user root and group root")]
-    MustBeOwnedByRoot,
-
-    #[error(
-        "parent directory {0} must not be writable by anyone other than user root and group root"
-    )]
-    ParentDirectoryMustNotBeWritableByOthers(PathBuf),
-
-    #[error("it must not be a symlink")]
-    TargetMustNotBeSymlink,
-
-    #[error("it must be a regular file")]
-    TargetMustBeRegularFile,
-
-    #[error("must have permissions u=rw,g=,o= (mode 0600)")]
-    TargetFileModeMustBe0600,
-
-    #[error("it must be a directory")]
-    TargetMustBeDirectory,
-
-    #[error("must not be writable by anyone other than user root and group root")]
-    TargetMustNotBeWritableByOthers,
-}
-
 #[derive(Error, Debug)]
-pub enum PathSecurityValidationError {
+pub enum SecureOpenFileError {
     #[error("Error opening path {path}: {err}")]
     OpenFailed { path: PathBuf, err: Errno },
 
@@ -376,11 +343,11 @@ pub enum PathSecurityValidationError {
 
 #[derive(Error, Debug)]
 pub enum SecureReadFileError {
-    #[error("Security error: {0}")]
-    PathSecurityValidationError(#[from] PathSecurityValidationError),
+    #[error("{0}")]
+    OpenError(#[from] SecureOpenFileError),
 
-    #[error("I/O error: {0}")]
-    IOError(#[from] io::Error),
+    #[error("Error reading file contents: {0}")]
+    ReadIOError(#[from] io::Error),
 }
 
 /// Reads a file's contents into a string, while validating that the file and all its parent directories
@@ -394,13 +361,12 @@ pub enum SecureReadFileError {
 ///
 /// A None result means the file doesn't exist.
 pub fn secure_read_file(absolute_path: &Path) -> Result<Option<String>, SecureReadFileError> {
-    let file = secure_open_file_for_reading(absolute_path)
-        .map_err(SecureReadFileError::PathSecurityValidationError)?;
+    let file = secure_open_file_for_reading(absolute_path)?;
     match file {
         Some(mut file) => {
             let mut contents = String::new();
             file.read_to_string(&mut contents)
-                .map_err(SecureReadFileError::IOError)?;
+                .map_err(SecureReadFileError::ReadIOError)?;
             Ok(Some(contents))
         }
         None => Ok(None),
@@ -411,7 +377,7 @@ pub fn secure_read_file(absolute_path: &Path) -> Result<Option<String>, SecureRe
 /// comply the security policy defined in [secure_read_file].
 pub fn secure_open_file_for_reading(
     absolute_path: &Path,
-) -> Result<Option<File>, PathSecurityValidationError> {
+) -> Result<Option<File>, SecureOpenFileError> {
     match open_secure_path(absolute_path, SecurePathTargetKind::File)? {
         Some(fd) => Ok(Some(File::from(fd))),
         None => Ok(None),
@@ -424,7 +390,7 @@ pub fn secure_open_file_for_reading(
 fn open_secure_path(
     absolute_path: &Path,
     target_kind: SecurePathTargetKind,
-) -> Result<Option<OwnedFd>, PathSecurityValidationError> {
+) -> Result<Option<OwnedFd>, SecureOpenFileError> {
     assert!(
         absolute_path.is_absolute(),
         "caller should ensure the path is absolute"
@@ -444,7 +410,7 @@ fn open_secure_path(
 
     let component_names = split_absolute_path_with_validations(absolute_path)?;
     if component_names.is_empty() {
-        return Err(PathSecurityValidationError::RootPathProhibited);
+        return Err(SecureOpenFileError::RootPathProhibited);
     }
 
     let mut current_dir_fd = open(
@@ -456,7 +422,7 @@ fn open_secure_path(
             | OFlag::O_NONBLOCK,
         Mode::empty(),
     )
-    .map_err(|e| PathSecurityValidationError::OpenFailed {
+    .map_err(|e| SecureOpenFileError::OpenFailed {
         path: PathBuf::from("/"),
         err: e,
     })?;
@@ -485,7 +451,7 @@ fn open_secure_path(
             Ok(file_stat) => file_stat,
             Err(Errno::ENOENT) => return Ok(None),
             Err(err) => {
-                return Err(PathSecurityValidationError::StatFailed {
+                return Err(SecureOpenFileError::StatFailed {
                     path: current_path,
                     err,
                 });
@@ -511,23 +477,26 @@ fn open_secure_path(
             Ok(fd) => fd,
             Err(Errno::ENOENT) => return Ok(None),
             Err(Errno::ELOOP) => {
-                let violation = match expected_role {
+                let message = match expected_role {
                     PathRole::Directory => {
-                        SecurePathViolation::ParentDirectoryMustNotBeSymlink(current_path.clone())
+                        format!(
+                            "parent directory {} must not be a symlink",
+                            current_path.display()
+                        )
                     }
                     PathRole::Target(SecurePathTargetKind::File)
                     | PathRole::Target(SecurePathTargetKind::Directory) => {
-                        SecurePathViolation::TargetMustNotBeSymlink
+                        String::from("it must not be a symlink")
                     }
                 };
 
-                return Err(PathSecurityValidationError::SecurityViolation {
+                return Err(SecureOpenFileError::SecurityViolation {
                     path: absolute_path.to_path_buf(),
-                    message: violation.to_string(),
+                    message,
                 });
             }
             Err(err) => {
-                return Err(PathSecurityValidationError::OpenFailed {
+                return Err(SecureOpenFileError::OpenFailed {
                     path: current_path.clone(),
                     err,
                 });
@@ -556,7 +525,7 @@ fn open_secure_path(
 /// if it contains '.' or '..' components.
 fn split_absolute_path_with_validations(
     absolute_path: &Path,
-) -> Result<Vec<std::ffi::OsString>, PathSecurityValidationError> {
+) -> Result<Vec<std::ffi::OsString>, SecureOpenFileError> {
     assert!(
         absolute_path.is_absolute(),
         "caller should ensure the path is absolute"
@@ -569,13 +538,13 @@ fn split_absolute_path_with_validations(
             path::Component::RootDir => {}
             path::Component::Normal(name) => result.push(name.to_os_string()),
             path::Component::CurDir | path::Component::ParentDir => {
-                return Err(PathSecurityValidationError::InvalidPath {
+                return Err(SecureOpenFileError::InvalidPath {
                     path: absolute_path.to_path_buf(),
                     message: String::from("path must not contain '.' or '..' components"),
                 });
             }
             path::Component::Prefix(..) => {
-                return Err(PathSecurityValidationError::InvalidPath {
+                return Err(SecureOpenFileError::InvalidPath {
                     path: absolute_path.to_path_buf(),
                     message: String::from("path must be a Unix-style absolute path"),
                 });
@@ -602,8 +571,8 @@ fn validate_opened_path_component(
     path: &Path,
     role: PathRole,
     resolved_path: &Path,
-) -> Result<(), PathSecurityValidationError> {
-    let file_stat = fstat(fd).map_err(|err| PathSecurityValidationError::StatFailed {
+) -> Result<(), SecureOpenFileError> {
+    let file_stat = fstat(fd).map_err(|err| SecureOpenFileError::StatFailed {
         path: path.to_path_buf(),
         err,
     })?;
@@ -640,64 +609,67 @@ fn validate_secure_path_component_policy(
     uid: u32,
     gid: u32,
     mode: u32,
-) -> Result<(), PathSecurityValidationError> {
+) -> Result<(), SecureOpenFileError> {
     assert!(partial_path.is_absolute());
     assert!(full_path.is_absolute());
 
-    let violation = match expected_role {
+    let violation_message = match expected_role {
         PathRole::Directory => {
             if file_type == FileType::Symlink {
-                Some(SecurePathViolation::ParentDirectoryMustNotBeSymlink(
-                    partial_path.to_path_buf(),
+                Some(format!(
+                    "parent directory {} must not be a symlink",
+                    partial_path.display()
                 ))
             } else if file_type != FileType::Directory {
-                Some(SecurePathViolation::ParentDirectoryMustBeDirectory(
-                    partial_path.to_path_buf(),
+                Some(format!(
+                    "parent directory {} must be a directory",
+                    partial_path.display()
                 ))
             } else if uid != 0 || gid != 0 {
-                Some(SecurePathViolation::MustBeOwnedByRoot)
+                Some(String::from("must be owned by user root and group root"))
             } else if mode & 0o002 != 0 {
-                Some(
-                    SecurePathViolation::ParentDirectoryMustNotBeWritableByOthers(
-                        partial_path.to_path_buf(),
-                    ),
-                )
+                Some(format!(
+                    "parent directory {} must not be writable by anyone other than user root and group root",
+                    partial_path.display()
+                ))
             } else {
                 None
             }
         }
         PathRole::Target(SecurePathTargetKind::File) => {
             if file_type == FileType::Symlink {
-                Some(SecurePathViolation::TargetMustNotBeSymlink)
+                Some(String::from("it must not be a symlink"))
             } else if file_type != FileType::Regular {
-                Some(SecurePathViolation::TargetMustBeRegularFile)
+                Some(String::from("it must be a regular file"))
             } else if uid != 0 || gid != 0 {
-                Some(SecurePathViolation::MustBeOwnedByRoot)
+                Some(String::from("must be owned by user root and group root"))
             } else if mode != 0o600 {
-                Some(SecurePathViolation::TargetFileModeMustBe0600)
+                Some(String::from("must have permissions u=rw,g=,o= (mode 0600)"))
             } else {
                 None
             }
         }
         PathRole::Target(SecurePathTargetKind::Directory) => {
             if file_type == FileType::Symlink {
-                Some(SecurePathViolation::TargetMustNotBeSymlink)
+                Some(String::from("it must not be a symlink"))
             } else if file_type != FileType::Directory {
-                Some(SecurePathViolation::TargetMustBeDirectory)
+                Some(String::from("it must be a directory"))
             } else if uid != 0 || gid != 0 {
-                Some(SecurePathViolation::MustBeOwnedByRoot)
+                Some(String::from("must be owned by user root and group root"))
             } else if mode & 0o002 != 0 {
-                Some(SecurePathViolation::TargetMustNotBeWritableByOthers)
+                Some(String::from(
+                    "must not be writable by anyone other than user root and group root",
+                ))
             } else {
                 None
             }
         }
     };
 
-    match violation {
-        Some(violation) => Err(PathSecurityValidationError::SecurityViolation {
+    match violation_message {
+        Some(message) => Err(SecureOpenFileError::SecurityViolation {
             path: full_path.to_path_buf(),
-            message: violation.to_string(),
+            message,
         }),
         None => Ok(()),
     }
@@ -777,7 +749,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
+            Err(super::SecureOpenFileError::SecurityViolation { message, .. })
                 if message == "must be owned by user root and group root"
         ));
     }
@@ -796,7 +768,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
+            Err(super::SecureOpenFileError::SecurityViolation { message, .. })
                 if message == "must have permissions u=rw,g=,o= (mode 0600)"
         ));
     }
@@ -815,7 +787,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
+            Err(super::SecureOpenFileError::SecurityViolation { message, .. })
                 if message == "parent directory /etc/matchhostfsowner must not be a symlink"
         ));
     }
@@ -834,7 +806,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
+            Err(super::SecureOpenFileError::SecurityViolation { message, .. })
                 if message == "must not be writable by anyone other than user root and group root"
         ));
     }
@@ -846,7 +818,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::PathSecurityValidationError::InvalidPath { message, .. })
+            Err(super::SecureOpenFileError::InvalidPath { message, .. })
                 if message == "path must not contain '.' or '..' components"
         ));
     }
