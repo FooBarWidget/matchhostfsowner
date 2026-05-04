@@ -324,14 +324,36 @@ enum FileType {
     Other,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Error)]
 enum SecurePathViolation {
-    NotADirectory,
-    NotARegularFile,
-    Symlink,
-    NotOwnedByRootUserAndGroup,
-    FilePermissionsNot0600,
-    DirectoryWritableByOthers,
+    #[error("parent directory {0} must not be a symlink")]
+    ParentDirectoryMustNotBeSymlink(PathBuf),
+
+    #[error("parent directory {0} must be a directory")]
+    ParentDirectoryMustBeDirectory(PathBuf),
+
+    #[error("must be owned by user root and group root")]
+    MustBeOwnedByRoot,
+
+    #[error(
+        "parent directory {0} must not be writable by anyone other than user root and group root"
+    )]
+    ParentDirectoryMustNotBeWritableByOthers(PathBuf),
+
+    #[error("it must not be a symlink")]
+    TargetMustNotBeSymlink,
+
+    #[error("it must be a regular file")]
+    TargetMustBeRegularFile,
+
+    #[error("must have permissions u=rw,g=,o= (mode 0600)")]
+    TargetFileModeMustBe0600,
+
+    #[error("it must be a directory")]
+    TargetMustBeDirectory,
+
+    #[error("must not be writable by anyone other than user root and group root")]
+    TargetMustNotBeWritableByOthers,
 }
 
 #[derive(Error, Debug)]
@@ -448,7 +470,7 @@ fn open_secure_path(
     let mut current_path = PathBuf::from("/");
 
     for (index, component_name) in component_names.iter().enumerate() {
-        let role = if index + 1 == component_names.len() {
+        let expected_role = if index + 1 == component_names.len() {
             PathRole::Target(target_kind)
         } else {
             PathRole::Directory
@@ -473,7 +495,7 @@ fn open_secure_path(
         validate_secure_path_component_policy(
             current_path.as_path(),
             absolute_path,
-            role,
+            expected_role,
             file_type_for_file_stat(&file_stat),
             file_stat.st_uid,
             file_stat.st_gid,
@@ -483,19 +505,25 @@ fn open_secure_path(
         let opened_fd = match openat(
             &current_dir_fd,
             Path::new(component_name),
-            open_flags_for_role(role),
+            open_flags_for_role(expected_role),
             Mode::empty(),
         ) {
             Ok(fd) => fd,
             Err(Errno::ENOENT) => return Ok(None),
             Err(Errno::ELOOP) => {
+                let violation = match expected_role {
+                    PathRole::Directory => {
+                        SecurePathViolation::ParentDirectoryMustNotBeSymlink(current_path.clone())
+                    }
+                    PathRole::Target(SecurePathTargetKind::File)
+                    | PathRole::Target(SecurePathTargetKind::Directory) => {
+                        SecurePathViolation::TargetMustNotBeSymlink
+                    }
+                };
+
                 return Err(PathSecurityValidationError::SecurityViolation {
                     path: absolute_path.to_path_buf(),
-                    message: secure_path_violation_message(
-                        current_path.as_path(),
-                        role,
-                        SecurePathViolation::Symlink,
-                    ),
+                    message: violation.to_string(),
                 });
             }
             Err(err) => {
@@ -506,9 +534,14 @@ fn open_secure_path(
             }
         };
 
-        validate_opened_path_component(&opened_fd, current_path.as_path(), role, absolute_path)?;
+        validate_opened_path_component(
+            &opened_fd,
+            current_path.as_path(),
+            expected_role,
+            absolute_path,
+        )?;
 
-        if role == PathRole::Target(target_kind) {
+        if expected_role == PathRole::Target(target_kind) {
             return Ok(Some(opened_fd));
         }
 
@@ -614,39 +647,47 @@ fn validate_secure_path_component_policy(
     let violation = match expected_role {
         PathRole::Directory => {
             if file_type == FileType::Symlink {
-                Some(SecurePathViolation::Symlink)
+                Some(SecurePathViolation::ParentDirectoryMustNotBeSymlink(
+                    partial_path.to_path_buf(),
+                ))
             } else if file_type != FileType::Directory {
-                Some(SecurePathViolation::NotADirectory)
+                Some(SecurePathViolation::ParentDirectoryMustBeDirectory(
+                    partial_path.to_path_buf(),
+                ))
             } else if uid != 0 || gid != 0 {
-                Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
+                Some(SecurePathViolation::MustBeOwnedByRoot)
             } else if mode & 0o002 != 0 {
-                Some(SecurePathViolation::DirectoryWritableByOthers)
+                Some(
+                    SecurePathViolation::ParentDirectoryMustNotBeWritableByOthers(
+                        partial_path.to_path_buf(),
+                    ),
+                )
             } else {
                 None
             }
         }
         PathRole::Target(SecurePathTargetKind::File) => {
             if file_type == FileType::Symlink {
-                Some(SecurePathViolation::Symlink)
+                Some(SecurePathViolation::TargetMustNotBeSymlink)
             } else if file_type != FileType::Regular {
-                Some(SecurePathViolation::NotARegularFile)
+                Some(SecurePathViolation::TargetMustBeRegularFile)
             } else if uid != 0 || gid != 0 {
-                Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
+                Some(SecurePathViolation::MustBeOwnedByRoot)
             } else if mode != 0o600 {
-                Some(SecurePathViolation::FilePermissionsNot0600)
+                Some(SecurePathViolation::TargetFileModeMustBe0600)
             } else {
                 None
             }
         }
         PathRole::Target(SecurePathTargetKind::Directory) => {
             if file_type == FileType::Symlink {
-                Some(SecurePathViolation::Symlink)
+                Some(SecurePathViolation::TargetMustNotBeSymlink)
             } else if file_type != FileType::Directory {
-                Some(SecurePathViolation::NotADirectory)
+                Some(SecurePathViolation::TargetMustBeDirectory)
             } else if uid != 0 || gid != 0 {
-                Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
+                Some(SecurePathViolation::MustBeOwnedByRoot)
             } else if mode & 0o002 != 0 {
-                Some(SecurePathViolation::DirectoryWritableByOthers)
+                Some(SecurePathViolation::TargetMustNotBeWritableByOthers)
             } else {
                 None
             }
@@ -656,60 +697,9 @@ fn validate_secure_path_component_policy(
     match violation {
         Some(violation) => Err(PathSecurityValidationError::SecurityViolation {
             path: full_path.to_path_buf(),
-            message: secure_path_violation_message(partial_path, expected_role, violation),
+            message: violation.to_string(),
         }),
         None => Ok(()),
-    }
-}
-
-fn secure_path_violation_message(
-    path: &Path,
-    role: PathRole,
-    violation: SecurePathViolation,
-) -> String {
-    match (role, violation) {
-        (PathRole::Directory, SecurePathViolation::Symlink) => {
-            format!("parent directory {} must not be a symlink", path.display())
-        }
-        (PathRole::Directory, SecurePathViolation::NotADirectory) => {
-            format!("parent directory {} must be a directory", path.display())
-        }
-        (PathRole::Directory, SecurePathViolation::NotOwnedByRootUserAndGroup)
-        | (
-            PathRole::Target(SecurePathTargetKind::File),
-            SecurePathViolation::NotOwnedByRootUserAndGroup,
-        )
-        | (
-            PathRole::Target(SecurePathTargetKind::Directory),
-            SecurePathViolation::NotOwnedByRootUserAndGroup,
-        ) => String::from("must be owned by user root and group root"),
-        (PathRole::Directory, SecurePathViolation::DirectoryWritableByOthers) => {
-            format!(
-                "parent directory {} must not be writable by anyone other than user root and group root",
-                path.display()
-            )
-        }
-        (PathRole::Target(SecurePathTargetKind::File), SecurePathViolation::Symlink) => {
-            String::from("it must not be a symlink")
-        }
-        (PathRole::Target(SecurePathTargetKind::File), SecurePathViolation::NotARegularFile) => {
-            String::from("it must be a regular file")
-        }
-        (
-            PathRole::Target(SecurePathTargetKind::File),
-            SecurePathViolation::FilePermissionsNot0600,
-        ) => String::from("must have permissions u=rw,g=,o= (mode 0600)"),
-        (PathRole::Target(SecurePathTargetKind::Directory), SecurePathViolation::Symlink) => {
-            String::from("it must not be a symlink")
-        }
-        (PathRole::Target(SecurePathTargetKind::Directory), SecurePathViolation::NotADirectory) => {
-            String::from("it must be a directory")
-        }
-        (
-            PathRole::Target(SecurePathTargetKind::Directory),
-            SecurePathViolation::DirectoryWritableByOthers,
-        ) => String::from("must not be writable by anyone other than user root and group root"),
-        _ => unreachable!("unexpected secure path violation for role"),
     }
 }
 
