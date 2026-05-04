@@ -5,10 +5,15 @@ use nix::{
     fcntl::{AtFlags, OFlag, open, openat},
     sys::stat::{FileStat, Mode, SFlag, fstat, fstatat},
 };
-use std::fs::File;
-use std::os::fd::OwnedFd;
-use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt};
-use std::{borrow::Cow, ffi::OsStr, fs, io, path::Path, path::PathBuf, process};
+use std::borrow::Cow;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::os::{
+    fd::OwnedFd,
+    unix::{ffi::OsStrExt, fs::PermissionsExt, process::CommandExt},
+};
+use std::path::{self, Path, PathBuf};
+use std::{ffi::OsStr, process};
 use thiserror::Error;
 
 #[cfg(target_os = "linux")]
@@ -306,15 +311,15 @@ enum SecurePathTargetKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SecurePathComponentRole {
-    ParentDirectory,
+enum PathRole {
+    Directory,
     Target(SecurePathTargetKind),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SecurePathComponentKind {
+enum FileType {
     Directory,
-    RegularFile,
+    Regular,
     Symlink,
     Other,
 }
@@ -330,82 +335,123 @@ enum SecurePathViolation {
 }
 
 #[derive(Error, Debug)]
-pub enum ValidateSecurePathError {
-    #[error("Error opening / while validating path: {0}")]
-    OpenRootDirectory(Errno),
+pub enum PathSecurityValidationError {
+    #[error("Error opening path {path}: {err}")]
+    OpenFailed { path: PathBuf, err: Errno },
 
-    #[error("Error opening path component {path}: {err}")]
-    OpenPathComponent { path: PathBuf, err: Errno },
-
-    #[error("Error inspecting path component {path}: {err}")]
-    InspectPathComponent { path: PathBuf, err: Errno },
+    #[error("Error inspecting path {path}: {err}")]
+    StatFailed { path: PathBuf, err: Errno },
 
     #[error("Error validating {path}: {message}")]
     SecurityViolation { path: PathBuf, message: String },
 
-    #[error("Error validating {path}: {message}")]
+    #[error("The root directory (\"/\") as input is not allowed")]
+    RootPathProhibited,
+
+    #[error("{message}")]
     InvalidPath { path: PathBuf, message: String },
 }
 
-#[allow(dead_code)]
-pub fn validate_secure_file_path(path: &Path) -> Result<bool, ValidateSecurePathError> {
-    match open_secure_path(path, SecurePathTargetKind::File)? {
-        Some(_) => Ok(true),
-        None => Ok(false),
+#[derive(Error, Debug)]
+pub enum SecureReadFileError {
+    #[error("Security error: {0}")]
+    PathSecurityValidationError(#[from] PathSecurityValidationError),
+
+    #[error("I/O error: {0}")]
+    IOError(#[from] io::Error),
+}
+
+/// Reads a file's contents into a string, while validating that the file and all its parent directories
+/// comply this security policy:
+/// - No symlinks.
+/// - File must be owned by root:root and have mode 0644.
+/// - Parent directories must be owned by root:root.
+/// - Parent directories must not be world-writable.
+///
+/// This is done in a TOCTU-safe manner.
+///
+/// A None result means the file doesn't exist.
+pub fn secure_read_file(absolute_path: &Path) -> Result<Option<String>, SecureReadFileError> {
+    let file = secure_open_file_for_reading(absolute_path)
+        .map_err(SecureReadFileError::PathSecurityValidationError)?;
+    match file {
+        Some(mut file) => {
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)
+                .map_err(SecureReadFileError::IOError)?;
+            Ok(Some(contents))
+        }
+        None => Ok(None),
     }
 }
 
-#[allow(dead_code)]
-pub fn validate_secure_directory_path(path: &Path) -> Result<bool, ValidateSecurePathError> {
-    match open_secure_path(path, SecurePathTargetKind::Directory)? {
-        Some(_) => Ok(true),
-        None => Ok(false),
-    }
-}
-
-pub fn open_secure_file_for_reading(path: &Path) -> Result<Option<File>, ValidateSecurePathError> {
-    match open_secure_path(path, SecurePathTargetKind::File)? {
+/// Opens a file for reading while validating that the file and all its parent directories
+/// comply the security policy defined in [secure_read_file].
+pub fn secure_open_file_for_reading(
+    absolute_path: &Path,
+) -> Result<Option<File>, PathSecurityValidationError> {
+    match open_secure_path(absolute_path, SecurePathTargetKind::File)? {
         Some(fd) => Ok(Some(File::from(fd))),
         None => Ok(None),
     }
 }
 
-fn open_secure_path(
-    resolved_path: &Path,
-    target_kind: SecurePathTargetKind,
-) -> Result<Option<OwnedFd>, ValidateSecurePathError> {
-    let component_names = normalized_secure_path_components(resolved_path)?;
+// Test cases:
+// absolute_path == "/" is disallowed
 
+fn open_secure_path(
+    absolute_path: &Path,
+    target_kind: SecurePathTargetKind,
+) -> Result<Option<OwnedFd>, PathSecurityValidationError> {
+    assert!(
+        absolute_path.is_absolute(),
+        "caller should ensure the path is absolute"
+    );
+
+    // Algorithm:
+    // 1. Split the path into components, and validate that it's a Unix-style absolute path without '.' or '..' components.
+    // 2. Starting at "/", walk the path down one component at a time using openat()
+    //    relative to the already-open parent directory fd.
+    // 3. For each component, validate it first with fstatat(..., NOFOLLOW),
+    //    then open the next component with openat(..., O_NOFOLLOW | O_NONBLOCK | O_DIRECTORY)
+    //    then validate the opened fd again with fstat().
+    //
+    // This strategy avoids resolving the full path by name after checking it, so symlink swaps
+    // and other TOCTOU races become open/validation failures. The O_NONBLOCK ensures that we
+    // don't end up blocking forever should one of the components be a FIFO or a device file.
+
+    let component_names = split_absolute_path_with_validations(absolute_path)?;
     if component_names.is_empty() {
-        return Err(ValidateSecurePathError::SecurityViolation {
-            path: resolved_path.to_path_buf(),
-            message: secure_path_violation_message(
-                resolved_path,
-                SecurePathComponentRole::Target(target_kind),
-                match target_kind {
-                    SecurePathTargetKind::File => SecurePathViolation::NotARegularFile,
-                    SecurePathTargetKind::Directory => SecurePathViolation::NotADirectory,
-                },
-            ),
-        });
+        return Err(PathSecurityValidationError::RootPathProhibited);
     }
 
-    let mut current_dir_fd = open(Path::new("/"), directory_open_flags(), Mode::empty())
-        .map_err(ValidateSecurePathError::OpenRootDirectory)?;
+    let mut current_dir_fd = open(
+        Path::new("/"),
+        OFlag::O_RDONLY
+            | OFlag::O_CLOEXEC
+            | OFlag::O_DIRECTORY
+            | OFlag::O_NOFOLLOW
+            | OFlag::O_NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|e| PathSecurityValidationError::OpenFailed {
+        path: PathBuf::from("/"),
+        err: e,
+    })?;
     validate_opened_path_component(
         &current_dir_fd,
         Path::new("/"),
-        SecurePathComponentRole::ParentDirectory,
-        resolved_path,
+        PathRole::Directory,
+        absolute_path,
     )?;
 
     let mut current_path = PathBuf::from("/");
 
     for (index, component_name) in component_names.iter().enumerate() {
         let role = if index + 1 == component_names.len() {
-            SecurePathComponentRole::Target(target_kind)
+            PathRole::Target(target_kind)
         } else {
-            SecurePathComponentRole::ParentDirectory
+            PathRole::Directory
         };
         current_path.push(component_name);
 
@@ -417,8 +463,8 @@ fn open_secure_path(
             Ok(file_stat) => file_stat,
             Err(Errno::ENOENT) => return Ok(None),
             Err(err) => {
-                return Err(ValidateSecurePathError::InspectPathComponent {
-                    path: current_path.clone(),
+                return Err(PathSecurityValidationError::StatFailed {
+                    path: current_path,
                     err,
                 });
             }
@@ -426,12 +472,12 @@ fn open_secure_path(
 
         validate_secure_path_component_policy(
             current_path.as_path(),
-            resolved_path,
+            absolute_path,
             role,
-            secure_path_component_kind_from_stat(&file_stat),
+            file_type_for_file_stat(&file_stat),
             file_stat.st_uid,
             file_stat.st_gid,
-            secure_path_component_mode_bits(&file_stat),
+            permission_bits_for_file_stat(&file_stat),
         )?;
 
         let opened_fd = match openat(
@@ -443,8 +489,8 @@ fn open_secure_path(
             Ok(fd) => fd,
             Err(Errno::ENOENT) => return Ok(None),
             Err(Errno::ELOOP) => {
-                return Err(ValidateSecurePathError::SecurityViolation {
-                    path: resolved_path.to_path_buf(),
+                return Err(PathSecurityValidationError::SecurityViolation {
+                    path: absolute_path.to_path_buf(),
                     message: secure_path_violation_message(
                         current_path.as_path(),
                         role,
@@ -453,16 +499,16 @@ fn open_secure_path(
                 });
             }
             Err(err) => {
-                return Err(ValidateSecurePathError::OpenPathComponent {
+                return Err(PathSecurityValidationError::OpenFailed {
                     path: current_path.clone(),
                     err,
                 });
             }
         };
 
-        validate_opened_path_component(&opened_fd, current_path.as_path(), role, resolved_path)?;
+        validate_opened_path_component(&opened_fd, current_path.as_path(), role, absolute_path)?;
 
-        if role == SecurePathComponentRole::Target(target_kind) {
+        if role == PathRole::Target(target_kind) {
             return Ok(Some(opened_fd));
         }
 
@@ -472,31 +518,32 @@ fn open_secure_path(
     unreachable!("path walk should return from inside the loop")
 }
 
-fn normalized_secure_path_components(
-    path: &Path,
-) -> Result<Vec<std::ffi::OsString>, ValidateSecurePathError> {
-    if !path.is_absolute() {
-        return Err(ValidateSecurePathError::InvalidPath {
-            path: path.to_path_buf(),
-            message: String::from("path must be absolute"),
-        });
-    }
+/// Splits an absolute path like "/foo/bar/baz" into ["foo", "bar", "baz"].
+/// Returns an error if it's not a Unix-style absolute path or
+/// if it contains '.' or '..' components.
+fn split_absolute_path_with_validations(
+    absolute_path: &Path,
+) -> Result<Vec<std::ffi::OsString>, PathSecurityValidationError> {
+    assert!(
+        absolute_path.is_absolute(),
+        "caller should ensure the path is absolute"
+    );
 
     let mut result = Vec::new();
 
-    for component in path.components() {
+    for component in absolute_path.components() {
         match component {
-            std::path::Component::RootDir => {}
-            std::path::Component::Normal(name) => result.push(name.to_os_string()),
-            std::path::Component::CurDir | std::path::Component::ParentDir => {
-                return Err(ValidateSecurePathError::InvalidPath {
-                    path: path.to_path_buf(),
+            path::Component::RootDir => {}
+            path::Component::Normal(name) => result.push(name.to_os_string()),
+            path::Component::CurDir | path::Component::ParentDir => {
+                return Err(PathSecurityValidationError::InvalidPath {
+                    path: absolute_path.to_path_buf(),
                     message: String::from("path must not contain '.' or '..' components"),
                 });
             }
-            std::path::Component::Prefix(..) => {
-                return Err(ValidateSecurePathError::InvalidPath {
-                    path: path.to_path_buf(),
+            path::Component::Prefix(..) => {
+                return Err(PathSecurityValidationError::InvalidPath {
+                    path: absolute_path.to_path_buf(),
                     message: String::from("path must be a Unix-style absolute path"),
                 });
             }
@@ -506,29 +553,24 @@ fn normalized_secure_path_components(
     Ok(result)
 }
 
-fn directory_open_flags() -> OFlag {
-    OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK
-}
-
-fn open_flags_for_role(role: SecurePathComponentRole) -> OFlag {
+fn open_flags_for_role(role: PathRole) -> OFlag {
     let base_flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK;
 
     match role {
-        SecurePathComponentRole::ParentDirectory
-        | SecurePathComponentRole::Target(SecurePathTargetKind::Directory) => {
+        PathRole::Directory | PathRole::Target(SecurePathTargetKind::Directory) => {
             base_flags | OFlag::O_DIRECTORY
         }
-        SecurePathComponentRole::Target(SecurePathTargetKind::File) => base_flags,
+        PathRole::Target(SecurePathTargetKind::File) => base_flags,
     }
 }
 
 fn validate_opened_path_component(
     fd: &OwnedFd,
     path: &Path,
-    role: SecurePathComponentRole,
+    role: PathRole,
     resolved_path: &Path,
-) -> Result<(), ValidateSecurePathError> {
-    let file_stat = fstat(fd).map_err(|err| ValidateSecurePathError::InspectPathComponent {
+) -> Result<(), PathSecurityValidationError> {
+    let file_stat = fstat(fd).map_err(|err| PathSecurityValidationError::StatFailed {
         path: path.to_path_buf(),
         err,
     })?;
@@ -537,40 +579,43 @@ fn validate_opened_path_component(
         path,
         resolved_path,
         role,
-        secure_path_component_kind_from_stat(&file_stat),
+        file_type_for_file_stat(&file_stat),
         file_stat.st_uid,
         file_stat.st_gid,
-        secure_path_component_mode_bits(&file_stat),
+        permission_bits_for_file_stat(&file_stat),
     )
 }
 
-fn secure_path_component_kind_from_stat(file_stat: &FileStat) -> SecurePathComponentKind {
+fn file_type_for_file_stat(file_stat: &FileStat) -> FileType {
     match SFlag::from_bits_truncate(file_stat.st_mode) & SFlag::S_IFMT {
-        SFlag::S_IFDIR => SecurePathComponentKind::Directory,
-        SFlag::S_IFREG => SecurePathComponentKind::RegularFile,
-        SFlag::S_IFLNK => SecurePathComponentKind::Symlink,
-        _ => SecurePathComponentKind::Other,
+        SFlag::S_IFDIR => FileType::Directory,
+        SFlag::S_IFREG => FileType::Regular,
+        SFlag::S_IFLNK => FileType::Symlink,
+        _ => FileType::Other,
     }
 }
 
-fn secure_path_component_mode_bits(file_stat: &FileStat) -> u32 {
+fn permission_bits_for_file_stat(file_stat: &FileStat) -> u32 {
     (file_stat.st_mode as u32) & 0o7777
 }
 
 fn validate_secure_path_component_policy(
-    path: &Path,
-    resolved_path: &Path,
-    role: SecurePathComponentRole,
-    kind: SecurePathComponentKind,
+    partial_path: &Path,
+    full_path: &Path,
+    expected_role: PathRole,
+    file_type: FileType,
     uid: u32,
     gid: u32,
     mode: u32,
-) -> Result<(), ValidateSecurePathError> {
-    let violation = match role {
-        SecurePathComponentRole::ParentDirectory => {
-            if kind == SecurePathComponentKind::Symlink {
+) -> Result<(), PathSecurityValidationError> {
+    assert!(partial_path.is_absolute());
+    assert!(full_path.is_absolute());
+
+    let violation = match expected_role {
+        PathRole::Directory => {
+            if file_type == FileType::Symlink {
                 Some(SecurePathViolation::Symlink)
-            } else if kind != SecurePathComponentKind::Directory {
+            } else if file_type != FileType::Directory {
                 Some(SecurePathViolation::NotADirectory)
             } else if uid != 0 || gid != 0 {
                 Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
@@ -580,10 +625,10 @@ fn validate_secure_path_component_policy(
                 None
             }
         }
-        SecurePathComponentRole::Target(SecurePathTargetKind::File) => {
-            if kind == SecurePathComponentKind::Symlink {
+        PathRole::Target(SecurePathTargetKind::File) => {
+            if file_type == FileType::Symlink {
                 Some(SecurePathViolation::Symlink)
-            } else if kind != SecurePathComponentKind::RegularFile {
+            } else if file_type != FileType::Regular {
                 Some(SecurePathViolation::NotARegularFile)
             } else if uid != 0 || gid != 0 {
                 Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
@@ -593,10 +638,10 @@ fn validate_secure_path_component_policy(
                 None
             }
         }
-        SecurePathComponentRole::Target(SecurePathTargetKind::Directory) => {
-            if kind == SecurePathComponentKind::Symlink {
+        PathRole::Target(SecurePathTargetKind::Directory) => {
+            if file_type == FileType::Symlink {
                 Some(SecurePathViolation::Symlink)
-            } else if kind != SecurePathComponentKind::Directory {
+            } else if file_type != FileType::Directory {
                 Some(SecurePathViolation::NotADirectory)
             } else if uid != 0 || gid != 0 {
                 Some(SecurePathViolation::NotOwnedByRootUserAndGroup)
@@ -609,9 +654,9 @@ fn validate_secure_path_component_policy(
     };
 
     match violation {
-        Some(violation) => Err(ValidateSecurePathError::SecurityViolation {
-            path: resolved_path.to_path_buf(),
-            message: secure_path_violation_message(path, role, violation),
+        Some(violation) => Err(PathSecurityValidationError::SecurityViolation {
+            path: full_path.to_path_buf(),
+            message: secure_path_violation_message(partial_path, expected_role, violation),
         }),
         None => Ok(()),
     }
@@ -619,59 +664,49 @@ fn validate_secure_path_component_policy(
 
 fn secure_path_violation_message(
     path: &Path,
-    role: SecurePathComponentRole,
+    role: PathRole,
     violation: SecurePathViolation,
 ) -> String {
     match (role, violation) {
-        (SecurePathComponentRole::ParentDirectory, SecurePathViolation::Symlink) => {
+        (PathRole::Directory, SecurePathViolation::Symlink) => {
             format!("parent directory {} must not be a symlink", path.display())
         }
-        (SecurePathComponentRole::ParentDirectory, SecurePathViolation::NotADirectory) => {
+        (PathRole::Directory, SecurePathViolation::NotADirectory) => {
             format!("parent directory {} must be a directory", path.display())
         }
-        (
-            SecurePathComponentRole::ParentDirectory,
+        (PathRole::Directory, SecurePathViolation::NotOwnedByRootUserAndGroup)
+        | (
+            PathRole::Target(SecurePathTargetKind::File),
             SecurePathViolation::NotOwnedByRootUserAndGroup,
         )
         | (
-            SecurePathComponentRole::Target(SecurePathTargetKind::File),
-            SecurePathViolation::NotOwnedByRootUserAndGroup,
-        )
-        | (
-            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
+            PathRole::Target(SecurePathTargetKind::Directory),
             SecurePathViolation::NotOwnedByRootUserAndGroup,
         ) => String::from("must be owned by user root and group root"),
-        (
-            SecurePathComponentRole::ParentDirectory,
-            SecurePathViolation::DirectoryWritableByOthers,
-        ) => {
+        (PathRole::Directory, SecurePathViolation::DirectoryWritableByOthers) => {
             format!(
                 "parent directory {} must not be writable by anyone other than user root and group root",
                 path.display()
             )
         }
+        (PathRole::Target(SecurePathTargetKind::File), SecurePathViolation::Symlink) => {
+            String::from("it must not be a symlink")
+        }
+        (PathRole::Target(SecurePathTargetKind::File), SecurePathViolation::NotARegularFile) => {
+            String::from("it must be a regular file")
+        }
         (
-            SecurePathComponentRole::Target(SecurePathTargetKind::File),
-            SecurePathViolation::Symlink,
-        ) => String::from("it must not be a symlink"),
-        (
-            SecurePathComponentRole::Target(SecurePathTargetKind::File),
-            SecurePathViolation::NotARegularFile,
-        ) => String::from("it must be a regular file"),
-        (
-            SecurePathComponentRole::Target(SecurePathTargetKind::File),
+            PathRole::Target(SecurePathTargetKind::File),
             SecurePathViolation::FilePermissionsNot0600,
         ) => String::from("must have permissions u=rw,g=,o= (mode 0600)"),
+        (PathRole::Target(SecurePathTargetKind::Directory), SecurePathViolation::Symlink) => {
+            String::from("it must not be a symlink")
+        }
+        (PathRole::Target(SecurePathTargetKind::Directory), SecurePathViolation::NotADirectory) => {
+            String::from("it must be a directory")
+        }
         (
-            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
-            SecurePathViolation::Symlink,
-        ) => String::from("it must not be a symlink"),
-        (
-            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
-            SecurePathViolation::NotADirectory,
-        ) => String::from("it must be a directory"),
-        (
-            SecurePathComponentRole::Target(SecurePathTargetKind::Directory),
+            PathRole::Target(SecurePathTargetKind::Directory),
             SecurePathViolation::DirectoryWritableByOthers,
         ) => String::from("must not be writable by anyone other than user root and group root"),
         _ => unreachable!("unexpected secure path violation for role"),
@@ -728,8 +763,8 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/config.yml"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::File),
-            super::SecurePathComponentKind::RegularFile,
+            super::PathRole::Target(super::SecurePathTargetKind::File),
+            super::FileType::Regular,
             0,
             0,
             0o600,
@@ -743,8 +778,8 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/config.yml"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::File),
-            super::SecurePathComponentKind::RegularFile,
+            super::PathRole::Target(super::SecurePathTargetKind::File),
+            super::FileType::Regular,
             1234,
             0,
             0o600,
@@ -752,7 +787,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
                 if message == "must be owned by user root and group root"
         ));
     }
@@ -762,8 +797,8 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/config.yml"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::File),
-            super::SecurePathComponentKind::RegularFile,
+            super::PathRole::Target(super::SecurePathTargetKind::File),
+            super::FileType::Regular,
             0,
             0,
             0o644,
@@ -771,7 +806,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
                 if message == "must have permissions u=rw,g=,o= (mode 0600)"
         ));
     }
@@ -781,8 +816,8 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::SecurePathComponentRole::ParentDirectory,
-            super::SecurePathComponentKind::Symlink,
+            super::PathRole::Directory,
+            super::FileType::Symlink,
             0,
             0,
             0o700,
@@ -790,7 +825,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
                 if message == "parent directory /etc/matchhostfsowner must not be a symlink"
         ));
     }
@@ -800,8 +835,8 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/hooks.d"),
             Path::new("/etc/matchhostfsowner/hooks.d"),
-            super::SecurePathComponentRole::Target(super::SecurePathTargetKind::Directory),
-            super::SecurePathComponentKind::Directory,
+            super::PathRole::Target(super::SecurePathTargetKind::Directory),
+            super::FileType::Directory,
             0,
             0,
             0o777,
@@ -809,18 +844,19 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(super::ValidateSecurePathError::SecurityViolation { message, .. })
+            Err(super::PathSecurityValidationError::SecurityViolation { message, .. })
                 if message == "must not be writable by anyone other than user root and group root"
         ));
     }
 
     #[test]
-    fn normalized_secure_path_components_rejects_dot_segments() {
-        let result = super::normalized_secure_path_components(Path::new("/etc/../tmp/config.yml"));
+    fn split_absolute_path_with_validations_rejects_dot_segments() {
+        let result =
+            super::split_absolute_path_with_validations(Path::new("/etc/../tmp/config.yml"));
 
         assert!(matches!(
             result,
-            Err(super::ValidateSecurePathError::InvalidPath { message, .. })
+            Err(super::PathSecurityValidationError::InvalidPath { message, .. })
                 if message == "path must not contain '.' or '..' components"
         ));
     }

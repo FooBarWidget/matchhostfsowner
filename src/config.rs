@@ -1,12 +1,10 @@
 use super::abort;
-use super::utils::{self, ValidateSecurePathError};
+use super::utils::secure_read_file;
 use log::{error, warn};
-use nix::errno::Errno;
 use nix::unistd::{self, Gid, Uid};
 use std::env::{self, VarError};
-use std::io::{self, Read};
 use std::option::Option;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process;
 use std::result::Result;
 use thiserror::Error;
@@ -183,10 +181,11 @@ fn get_config_file_path() -> PathBuf {
 
 fn load_config_file_yaml() -> Yaml {
     let config_file_path = get_config_file_path();
-    let file_config_str = read_trusted_config_file_to_string(config_file_path.as_path())
+    let file_config_str = secure_read_file(config_file_path.as_path())
         .unwrap_or_else(|err| {
-            abort!("{}", err);
+            abort!("Error loading {}: {}", config_file_path.display(), err);
         })
+        // If file doesn't exist, treat it as empty config.
         .unwrap_or_else(|| String::from("{}"));
 
     let yaml_object = YamlLoader::load_from_str(file_config_str.as_str());
@@ -208,71 +207,6 @@ fn load_config_file_yaml() -> Yaml {
                 "Error loading {}: the file must contain a YAML key-value map",
                 config_file_path.display()
             );
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-enum TrustedConfigFileError {
-    #[error("Error opening / while validating config path: {0}")]
-    OpenRootDirectory(Errno),
-
-    #[error("Error opening config path component {path}: {err}")]
-    OpenPathComponent { path: PathBuf, err: Errno },
-
-    #[error("Error inspecting config path component {path}: {err}")]
-    InspectPathComponent { path: PathBuf, err: Errno },
-
-    #[error("Error loading {config_file_path} (security reason): {message}")]
-    SecurityViolation {
-        config_file_path: PathBuf,
-        message: String,
-    },
-
-    #[error("Error reading from {path}: {err}")]
-    ReadConfigFile { path: PathBuf, err: io::Error },
-}
-
-fn read_trusted_config_file_to_string(
-    resolved_config_file_path: &Path,
-) -> Result<Option<String>, TrustedConfigFileError> {
-    let mut file = match utils::open_secure_file_for_reading(resolved_config_file_path)
-        .map_err(|err| map_secure_path_error(resolved_config_file_path, err))?
-    {
-        Some(file) => file,
-        None => return Ok(None),
-    };
-
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .map_err(|err| TrustedConfigFileError::ReadConfigFile {
-            path: resolved_config_file_path.to_path_buf(),
-            err,
-        })?;
-
-    Ok(Some(contents))
-}
-
-fn map_secure_path_error(
-    config_file_path: &Path,
-    err: ValidateSecurePathError,
-) -> TrustedConfigFileError {
-    match err {
-        ValidateSecurePathError::OpenRootDirectory(err) => {
-            TrustedConfigFileError::OpenRootDirectory(err)
-        }
-        ValidateSecurePathError::OpenPathComponent { path, err } => {
-            TrustedConfigFileError::OpenPathComponent { path, err }
-        }
-        ValidateSecurePathError::InspectPathComponent { path, err } => {
-            TrustedConfigFileError::InspectPathComponent { path, err }
-        }
-        ValidateSecurePathError::SecurityViolation { message, .. }
-        | ValidateSecurePathError::InvalidPath { message, .. } => {
-            TrustedConfigFileError::SecurityViolation {
-                config_file_path: config_file_path.to_path_buf(),
-                message,
-            }
         }
     }
 }

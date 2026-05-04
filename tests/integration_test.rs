@@ -492,7 +492,7 @@ fn test_config_file_non_root_writable_parents_rejected() -> Result<(), Box<dyn e
     let output = run_container(&image, &[], &["id"])?;
     assert_contains_substr!(
         output.text,
-        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc/matchhostfsowner must not be writable by anyone other than user root and group root"
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc/matchhostfsowner must not be world-writable"
     );
     assert!(!output.status.success());
 
@@ -510,7 +510,7 @@ fn test_config_file_non_root_writable_parents_rejected() -> Result<(), Box<dyn e
     let output = run_container(&image, &[], &["id"])?;
     assert_contains_substr!(
         output.text,
-        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc must not be writable by anyone other than user root and group root"
+        "Error loading /etc/matchhostfsowner/config.yml (security reason): parent directory /etc must not be world-writable"
     );
     assert!(!output.status.success());
 
