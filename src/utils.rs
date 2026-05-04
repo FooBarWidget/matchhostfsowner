@@ -304,15 +304,9 @@ pub fn chown_dir_recursively_no_fs_boundary_crossing(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SecurePathTargetKind {
-    File,
-    Directory,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PathRole {
     Directory,
-    Target(SecurePathTargetKind),
+    Target { is_directory: bool },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -378,7 +372,7 @@ pub fn secure_read_file(absolute_path: &Path) -> Result<Option<String>, SecureRe
 pub fn secure_open_file_for_reading(
     absolute_path: &Path,
 ) -> Result<Option<File>, SecureOpenFileError> {
-    match open_secure_path(absolute_path, SecurePathTargetKind::File)? {
+    match open_secure_path(absolute_path, false)? {
         Some(fd) => Ok(Some(File::from(fd))),
         None => Ok(None),
     }
@@ -389,7 +383,7 @@ pub fn secure_open_file_for_reading(
 
 fn open_secure_path(
     absolute_path: &Path,
-    target_kind: SecurePathTargetKind,
+    target_is_directory: bool,
 ) -> Result<Option<OwnedFd>, SecureOpenFileError> {
     assert!(
         absolute_path.is_absolute(),
@@ -436,8 +430,10 @@ fn open_secure_path(
     let mut current_path = PathBuf::from("/");
 
     for (index, component_name) in component_names.iter().enumerate() {
-        let expected_role = if index + 1 == component_names.len() {
-            PathRole::Target(target_kind)
+        let current_path_role = if index + 1 == component_names.len() {
+            PathRole::Target {
+                is_directory: target_is_directory,
+            }
         } else {
             PathRole::Directory
         };
@@ -461,7 +457,7 @@ fn open_secure_path(
         validate_secure_path_component_policy(
             current_path.as_path(),
             absolute_path,
-            expected_role,
+            current_path_role,
             file_type_for_file_stat(&file_stat),
             file_stat.st_uid,
             file_stat.st_gid,
@@ -471,21 +467,23 @@ fn open_secure_path(
         let opened_fd = match openat(
             &current_dir_fd,
             Path::new(component_name),
-            open_flags_for_role(expected_role),
+            open_flags_for_role(current_path_role),
             Mode::empty(),
         ) {
             Ok(fd) => fd,
             Err(Errno::ENOENT) => return Ok(None),
             Err(Errno::ELOOP) => {
-                let message = match expected_role {
+                let message = match current_path_role {
                     PathRole::Directory => {
                         format!(
                             "parent directory {} must not be a symlink",
                             current_path.display()
                         )
                     }
-                    PathRole::Target(SecurePathTargetKind::File)
-                    | PathRole::Target(SecurePathTargetKind::Directory) => {
+                    PathRole::Target {
+                        is_directory: false,
+                    }
+                    | PathRole::Target { is_directory: true } => {
                         String::from("it must not be a symlink")
                     }
                 };
@@ -506,11 +504,15 @@ fn open_secure_path(
         validate_opened_path_component(
             &opened_fd,
             current_path.as_path(),
-            expected_role,
+            current_path_role,
             absolute_path,
         )?;
 
-        if expected_role == PathRole::Target(target_kind) {
+        if current_path_role
+            == (PathRole::Target {
+                is_directory: target_is_directory,
+            })
+        {
             return Ok(Some(opened_fd));
         }
 
@@ -559,10 +561,12 @@ fn open_flags_for_role(role: PathRole) -> OFlag {
     let base_flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK;
 
     match role {
-        PathRole::Directory | PathRole::Target(SecurePathTargetKind::Directory) => {
+        PathRole::Directory | PathRole::Target { is_directory: true } => {
             base_flags | OFlag::O_DIRECTORY
         }
-        PathRole::Target(SecurePathTargetKind::File) => base_flags,
+        PathRole::Target {
+            is_directory: false,
+        } => base_flags,
     }
 }
 
@@ -636,7 +640,9 @@ fn validate_secure_path_component_policy(
                 None
             }
         }
-        PathRole::Target(SecurePathTargetKind::File) => {
+        PathRole::Target {
+            is_directory: false,
+        } => {
             if file_type == FileType::Symlink {
                 Some(String::from("it must not be a symlink"))
             } else if file_type != FileType::Regular {
@@ -649,7 +655,7 @@ fn validate_secure_path_component_policy(
                 None
             }
         }
-        PathRole::Target(SecurePathTargetKind::Directory) => {
+        PathRole::Target { is_directory: true } => {
             if file_type == FileType::Symlink {
                 Some(String::from("it must not be a symlink"))
             } else if file_type != FileType::Directory {
@@ -725,7 +731,9 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/config.yml"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::PathRole::Target(super::SecurePathTargetKind::File),
+            super::PathRole::Target {
+                is_directory: false,
+            },
             super::FileType::Regular,
             0,
             0,
@@ -740,7 +748,9 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/config.yml"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::PathRole::Target(super::SecurePathTargetKind::File),
+            super::PathRole::Target {
+                is_directory: false,
+            },
             super::FileType::Regular,
             1234,
             0,
@@ -759,7 +769,9 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/config.yml"),
             Path::new("/etc/matchhostfsowner/config.yml"),
-            super::PathRole::Target(super::SecurePathTargetKind::File),
+            super::PathRole::Target {
+                is_directory: false,
+            },
             super::FileType::Regular,
             0,
             0,
@@ -797,7 +809,7 @@ mod tests {
         let result = super::validate_secure_path_component_policy(
             Path::new("/etc/matchhostfsowner/hooks.d"),
             Path::new("/etc/matchhostfsowner/hooks.d"),
-            super::PathRole::Target(super::SecurePathTargetKind::Directory),
+            super::PathRole::Target { is_directory: true },
             super::FileType::Directory,
             0,
             0,
